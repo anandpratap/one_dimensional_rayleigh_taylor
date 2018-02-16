@@ -1,10 +1,15 @@
-import adolc as ad
+import logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+try:
+    import adolc as ad
+except:
+    logger.warning("ADOLC not found. It is required for adjoint calculations.")
 import numpy as np
 import numpy.linalg as la
 import matplotlib.pyplot as plt
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
-from enum import Enum
 import sod
 def same_address(x, y):
     return x.__array_interface__['data'] == y.__array_interface__['data']
@@ -25,10 +30,14 @@ class constants(object):
     R = 8.314
     
 class EulerEquation(object):
-    def __init__(self, n=11):
+    def __init__(self, n=11, nscalar=0):
+        self.logger = logging.getLogger(__name__)
         self.n = n - 1
-        self.nscalar = 4
+        self.nscalar = nscalar
         self.nvar = 3 + self.nscalar
+        self.scalar_map = {}
+        for i in range(self.nscalar):
+            self.scalar_map["Y_%i"%i] = 3 + i
         self.x = np.linspace(-0.5, 0.5, self.n + 1)
         self.dx = self.x[1] - self.x[0]
         self.xc = 0.5*(self.x[0:-1] + self.x[1:])
@@ -55,8 +64,10 @@ class EulerEquation(object):
         return rho, rhou, E
 
     def get_scalar_index(self, scalar):
-        return 3 + scalar
-    
+        if type(scalar) == type(1):
+            return 3 + scalar
+        elif type(scalar) == type(""):
+            return self.scalar_map[scalar]
     def calc_press(self, Q):
         output = []
         rho = Q[:, 0]
@@ -104,7 +115,6 @@ class EulerEquation(object):
 
         
         rho[1:-1], u[1:-1], p[1:-1], Y[1:-1,:] = self.calc_press(Q)
-        
         rho[0] = rho[1]
         u[0] = u[1]
         p[0] = p[1]
@@ -115,7 +125,7 @@ class EulerEquation(object):
         u[-1] = u[-2]
         p[-1] = p[-2]
         Y[-1,:] = Y[-2,:]
-
+        
         drho = self.calc_gradient_face(rho)
         du = self.calc_gradient_face(u)
         dp = self.calc_gradient_face(p)
@@ -167,9 +177,8 @@ class EulerEquation(object):
         assert(same_address(Ur, self.Ur))
         
         
-    def calc_flux(self):
+    def calc_flux_roe(self):
         F = self.F.reshape([self.n+1, self.nvar])
-
         Ul = self.Ul.reshape([self.n+1, self.nvar])
         rhol = Ul[:, 0]
         ul = Ul[:, 1]
@@ -217,7 +226,8 @@ class EulerEquation(object):
         F[:,0] = 0.5*((rhol*ul + rhor*ur) - f1);
         F[:,1] = 0.5*((rhol*ul*ul + pl + rhor*ur*ur + pr) - f2);
         F[:,2] = 0.5*(ul*hl*rhol + ur*hr*rhor - f3);
-        F[:,3] = 0.5*(rhol*ul*Yl + rhor*ur*Yr) + 0.5*np.sign(uavg)*(rhol*ul*Yl - rhor*ur*Yr)
+        for i in range(self.nscalar):
+            F[:,self.get_scalar_index(i)] = 0.5*(rhol*ul*Yl[:,i] + rhor*ur*Yr[:,i]) + 0.5*np.sign(uavg)*(rhol*ul*Yl[:,i] - rhor*ur*Yr[:,i])
         
         F = F.reshape((self.n+1)*self.nvar)
         Ul = Ul.reshape((self.n+1)*self.nvar)
@@ -341,14 +351,19 @@ class EulerEquation(object):
         Ux_face = self.Ux_face.reshape([self.n+1, self.nvar])
         Fv = self.Fv.reshape([self.n+1, self.nvar])
         Fv[:,:] = 0.0
-        Fv[:,3] = Ux_face[:,3] * 1e-3
+        if self.nscalar > 0:
+            Fv[:,3] = Ux_face[:,3] * 1e-3
         #print Fv[:,3].max()
 
     def calc_source(self):
         S = self.S.reshape([self.n, self.nvar])
         Ux_center = self.Ux_center.reshape([self.n, self.nvar])
-        S[:,4] = Ux_center[:,2]*0.1
-        
+        if self.nscalar > 0:
+            S[:,self.get_scalar_index("Y_1")] = Ux_center[:,2]*0.1
+
+    def temporal_hook(self):
+        pass
+            
     def calc_residual(self):
         self.set_bc()
         self.reconstruct()
@@ -418,7 +433,6 @@ class EulerEquation(object):
         t = 0.0
 
         while 1:
-            print t
             #tag = 0
             #options = np.array([0,0,0,0],dtype=int)
             #self.record_tape()
@@ -442,12 +456,16 @@ class EulerEquation(object):
             #plt.spy(drdu)
             #plt.show()
             t += dt
+            if int(t/dt)%100 == 0: 
+                self.logger.info("Time = %.2e/%.2e (%.01f%% complete)"%(t, tf, t/tf*100))
+
             if t > tf:
+                self.logger.info("Time = %.2e/%.2e (%.01f%% complete)"%(t, tf, t/tf*100))
                 break
 if __name__ == "__main__":
     qleft = np.array([1.0, 0.0, 1.0])
     qright = np.array([0.125, 0.0, 0.1])
-    eqn = EulerEquation(n=201)
+    eqn = EulerEquation(n=501)
     eqn.initialize_sod(qleft, qright)
     eqn.solve(tf=0.2)
     rho, rhou, rhoE, rhoY = eqn.get_solution()
@@ -457,11 +475,11 @@ if __name__ == "__main__":
     plt.plot(eqn.xc, rho, 'r-', lw=1, label="Density")
     plt.plot(eqn.xc, u, 'g-', lw=1, label="Velocity")
     plt.plot(eqn.xc, p, 'b-', lw=1, label="Pressure")
+    if eqn.nscalar > 0:
+        plt.plot(eqn.xc, rhoY, 'cx-', lw=1, label="Y")
 
-    plt.plot(eqn.xc, rhoY, 'cx-', lw=1, label="Y")
-
-    #plt.plot(eqn.xc, rhou, 'x-', lw=1)
-    #plt.plot(eqn.xc, rhoE, 'x-', lw=1)
+    # #plt.plot(eqn.xc, rhou, 'x-', lw=1)
+    # #plt.plot(eqn.xc, rhoE, 'x-', lw=1)
 
     positions, regions, values = sod.solve(left_state=(1, 1, 0), right_state=(0.1, 0.125, 0.),
                                            geometry=(-0.5, 0.5, 0.0), t=0.2, gamma=1.4, npts=101)
