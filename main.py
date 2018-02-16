@@ -15,12 +15,21 @@ class constants(object):
 class EulerEquation(object):
     def __init__(self, n=11):
         self.n = n - 1
-        self.nvar = 4
+        self.nscalar = 2
+        self.nvar = 3 + self.nscalar
         self.x = np.linspace(-0.5, 0.5, self.n + 1)
         self.dx = self.x[1] - self.x[0]
         self.xc = 0.5*(self.x[0:-1] + self.x[1:])
         self.Q = np.zeros(self.n*self.nvar)
 
+    def calc_gradient_face(self, y):
+        dydx = (y[1:] - y[0:-1])/self.dx
+        return dydx
+
+    def calc_gradient_center(self, y):
+        dydx = (y[2:] - y[0:-2])/(2.0*self.dx)
+        return dydx
+    
     def calc_dt(self):
         rho, u, p, Y = self.get_solution_primvars()
         a = np.sqrt(constants.gamma*p/rho)
@@ -33,21 +42,28 @@ class EulerEquation(object):
         E = p/(constants.gamma-1.0) + 0.5*rho*u**2;
         return rho, rhou, E
 
+    def get_scalar_index(self, scalar):
+        return 3 + scalar
     
     def calc_press(self, Q):
+        output = []
         rho = Q[:, 0]
         u = Q[:, 1]/Q[:, 0]
         p = (constants.gamma-1.0)*(Q[:,2] - 0.5*Q[:,1]**2/Q[:,0])
-        Y = Q[:, 3]/Q[:, 0]
-        return rho, u, p, Y
+        output = [rho, u, p]
+        Y = Q[:, 3:]/np.tile(Q[:, 0], (self.nscalar,1)).T
+        output.append(Y)
+        return output
     
     def initialize_sod(self, qleft, qright):
         Q = self.Q.reshape([self.n, self.nvar])
         Q[:self.n/2, 0], Q[:self.n/2, 1], Q[:self.n/2, 2] = self.calc_E(qleft[0], qleft[1], qleft[2]);
         Q[self.n/2:, 0], Q[self.n/2:, 1], Q[self.n/2:, 2] = self.calc_E(qright[0], qright[1], qright[2]);
 
-        Q[:self.n/2, 3] = 1.0
-        Q[self.n/2:, 3] = 0.5
+        for scalar in range(self.nscalar):
+            idx = self.get_scalar_index(scalar)
+            Q[:self.n/2, idx] = 1.0 #+ idx
+            Q[self.n/2:, idx] = 0.0 #+ idx
         
         Q = Q.reshape(self.n*self.nvar)
         # check if any copy happened
@@ -55,14 +71,14 @@ class EulerEquation(object):
 
     def get_solution(self):
         Q = self.Q.reshape([self.n, self.nvar])
-        return Q[:, 0], Q[:, 1], Q[:, 2], Q[:, 3]
+        output = [Q[:, 0], Q[:, 1], Q[:, 2]]
+        Y = Q[:, 3:]
+        output.append(Y)
+        return output
 
     def get_solution_primvars(self):
         Q = self.Q.reshape([self.n, self.nvar])
         rho, u, p, Y = self.calc_press(Q)
-        #rho = Q[:, 0]
-        #u = Q[:, 1]/Q[:, 0]
-        #p = (constants.gamma-1.0)*(Q[:,2] - 0.5*(rho*u*u))
         return rho, u, p, Y
 
     def set_bc(self):
@@ -72,25 +88,57 @@ class EulerEquation(object):
         rho = U[:, 0]
         u = U[:, 1]
         p = U[:, 2]
-        Y = U[:, 3]
+        Y = U[:, 3:]
 
         
-        rho[1:-1], u[1:-1], p[1:-1], Y[1:-1] = self.calc_press(Q)
+        rho[1:-1], u[1:-1], p[1:-1], Y[1:-1,:] = self.calc_press(Q)
         
         rho[0] = rho[1]
         u[0] = u[1]
         p[0] = p[1]
-        Y[0] = Y[1]
+        Y[0,:] = Y[1,:]
 
         
         rho[-1] = rho[-2]
         u[-1] = u[-2]
         p[-1] = p[-2]
-        Y[-1] = Y[-2]
+        Y[-1,:] = Y[-2,:]
 
+        drho = self.calc_gradient_face(rho)
+        du = self.calc_gradient_face(u)
+        dp = self.calc_gradient_face(p)
+        dY = self.calc_gradient_face(Y)
+
+        drhoc = self.calc_gradient_center(rho)
+        duc = self.calc_gradient_center(u)
+        dpc = self.calc_gradient_center(p)
+        dYc = self.calc_gradient_center(Y)
+
+        Ux_face = self.Ux_face.reshape([self.n+1, self.nvar])
+        Ux_center = self.Ux_center.reshape([self.n, self.nvar])
+        
+
+        Ux_face[:,0] = drho
+        Ux_face[:,1] = du
+        Ux_face[:,2] = dp
+        Ux_face[:,3:] = dY[:,:]
+
+        Ux_center[:,0] = drhoc
+        Ux_center[:,1] = duc
+        Ux_center[:,2] = dpc
+        Ux_center[:,3:] = dYc[:,:]
+        #plt.figure()
+        #plt.plot(0.5*(dY[1:,0]+dY[0:-1,0]), 'rx-')
+        #plt.plot(dYc[:,0], 'gx-')
+        #plt.show()
+        
         U = U.reshape((self.n+2)*self.nvar)
         assert(same_address(U, self.U))
-
+        Ux_face = Ux_face.reshape((self.n+1)*self.nvar)
+        assert(same_address(Ux_face, self.Ux_face))
+        Ux_center = Ux_center.reshape(self.n*self.nvar)
+        assert(same_address(Ux_center, self.Ux_center))
+        
     def reconstruct(self):
         U = self.U.reshape([self.n+2, self.nvar])
         Ul = self.Ul.reshape([self.n+1, self.nvar])
@@ -114,7 +162,7 @@ class EulerEquation(object):
         rhol = Ul[:, 0]
         ul = Ul[:, 1]
         pl = Ul[:, 2]
-        Yl = Ul[:, 3]
+        Yl = Ul[:, 3:]
 
         
 
@@ -122,7 +170,7 @@ class EulerEquation(object):
         rhor = Ur[:, 0]
         ur = Ur[:, 1]
         pr = Ur[:, 2]
-        Yr = Ur[:, 3]
+        Yr = Ur[:, 3:]
                 
         
         el = pl/(constants.gamma_m) + 0.5*rhol*ul*ul;
@@ -157,7 +205,6 @@ class EulerEquation(object):
         F[:,0] = 0.5*((rhol*ul + rhor*ur) - f1);
         F[:,1] = 0.5*((rhol*ul*ul + pl + rhor*ur*ur + pr) - f2);
         F[:,2] = 0.5*(ul*hl*rhol + ur*hr*rhor - f3);
-
         F[:,3] = 0.5*(rhol*ul*Yl + rhor*ur*Yr) + 0.5*np.sign(uavg)*(rhol*ul*Yl - rhor*ur*Yr)
         
         F = F.reshape((self.n+1)*self.nvar)
@@ -166,7 +213,7 @@ class EulerEquation(object):
         assert(same_address(Ul, self.Ul))
         assert(same_address(Ur, self.Ur))
         assert(same_address(F, self.F))
-
+        
     def calc_flux_hllc(self):
         F = self.F.reshape([self.n+1, self.nvar])
 
@@ -174,7 +221,7 @@ class EulerEquation(object):
         rhol = Ul[:, 0]
         ul = Ul[:, 1]
         pl = Ul[:, 2]
-        Yl = Ul[:, 3]
+        Yl = Ul[:, 3:]
 
         
 
@@ -182,7 +229,7 @@ class EulerEquation(object):
         rhor = Ur[:, 0]
         ur = Ur[:, 1]
         pr = Ur[:, 2]
-        Yr = Ur[:, 3]
+        Yr = Ur[:, 3:]
         
         
         el = pl/(constants.gamma_m) + 0.5*rhol*ul*ul;
@@ -216,6 +263,9 @@ class EulerEquation(object):
             U_star_1 = Ss * fac
             U_star_2 = e/rho + (Ss-u)*(Ss + p/(rho*(S-u)))
             U_star_2 = U_star_2 * fac
+            #print fac.shape
+            fac = np.tile(fac, (2,1)).T
+            #print fac.shape, Y.shape
             U_star_3 = Y * fac
             return U_star_0, U_star_1, U_star_2, U_star_3
 
@@ -223,35 +273,49 @@ class EulerEquation(object):
         F[region_0,0] = rhol[region_0]*ul[region_0]
         F[region_0,1] = rhol[region_0]*ul[region_0]*ul[region_0] + pl[region_0]
         F[region_0,2] = ul[region_0]*(el[region_0] + pl[region_0])
-        F[region_0,3] = rhol[region_0]*ul[region_0]*Yl[region_0]
+        for i in range(self.nscalar):
+            idx = self.get_scalar_index(i)
+            F[region_0,idx] = rhol[region_0]*ul[region_0]*Yl[region_0,i]
 
         F[region_1,0] = rhol[region_1]*ul[region_1]
         F[region_1,1] = rhol[region_1]*ul[region_1]*ul[region_1] + pl[region_1]
         F[region_1,2] = ul[region_1]*(el[region_1] + pl[region_1])
-        F[region_1,3] = rhol[region_1]*ul[region_1]*Yl[region_1]
+
+        for i in range(self.nscalar):
+            idx = self.get_scalar_index(i)
+            F[region_1,idx] = rhol[region_1]*ul[region_1]*Yl[region_1,i]
 
         U_star = calc_ustar(rhol[region_1], ul[region_1], pl[region_1], el[region_1], Yl[region_1], Sl[region_1], S_star[region_1])
         F[region_1,0] += Sl[region_1]*(U_star[0] - rhol[region_1])
         F[region_1,1] += Sl[region_1]*(U_star[1] - rhol[region_1]*ul[region_1])
         F[region_1,2] += Sl[region_1]*(U_star[2] - el[region_1])
-        F[region_1,3] += Sl[region_1]*(U_star[3] - rhol[region_1]*Yl[region_1])
+        for i in range(self.nscalar):
+            idx = self.get_scalar_index(i)
+            F[region_1,idx] += Sl[region_1]*(U_star[3][:,i] - rhol[region_1]*Yl[region_1,i])
 
         
         F[region_2,0] = rhor[region_2]*ur[region_2]
         F[region_2,1] = rhor[region_2]*ur[region_2]*ur[region_2] + pr[region_2]
         F[region_2,2] = ur[region_2]*(er[region_2] + pr[region_2])
-        F[region_2,3] = rhor[region_2]*ur[region_2]*Yr[region_2]
+        for i in range(self.nscalar):
+            idx = self.get_scalar_index(i)
+            F[region_2,idx] = rhor[region_2]*ur[region_2]*Yr[region_2,i]
+            
         U_star = calc_ustar(rhor[region_2], ur[region_2], pr[region_2], er[region_2], Yr[region_2], Sr[region_2], S_star[region_2])
         F[region_2,0] += Sr[region_2]*(U_star[0] - rhor[region_2])
         F[region_2,1] += Sr[region_2]*(U_star[1] - rhor[region_2]*ur[region_2])
         F[region_2,2] += Sr[region_2]*(U_star[2] - er[region_2])
-        F[region_2,3] += Sr[region_2]*(U_star[3] - rhor[region_2]*Yr[region_2])
+        for i in range(self.nscalar):
+            idx = self.get_scalar_index(i)
+            F[region_2,idx] += Sr[region_2]*(U_star[3][:,i] - rhor[region_2]*Yr[region_2,i])
 
 
         F[region_3,0] = rhor[region_3]*ur[region_3]
         F[region_3,1] = rhor[region_3]*ur[region_3]*ur[region_3] + pr[region_3]
         F[region_3,2] = ur[region_3]*(er[region_3] + pr[region_3])
-        F[region_3,3] = rhor[region_3]*ur[region_3]*Yr[region_3]
+        for i in range(self.nscalar):
+            idx = self.get_scalar_index(i)
+            F[region_3,idx] = rhor[region_3]*ur[region_3]*Yr[region_3,i]
 
         F = F.reshape((self.n+1)*self.nvar)
         Ul = Ul.reshape((self.n+1)*self.nvar)
@@ -260,14 +324,19 @@ class EulerEquation(object):
         assert(same_address(Ur, self.Ur))
         assert(same_address(F, self.F))
 
+    
         
     def calc_residual(self):
         self.set_bc()
         self.reconstruct()
         self.calc_flux_hllc()
+        
         R = self.R.reshape([self.n, self.nvar])
         F = self.F.reshape([self.n+1, self.nvar])
         R[:,:] = - (F[1:,:] - F[0:-1,:])/self.dx
+
+        Ux_face = self.Ux_face.reshape([self.n+1, self.nvar])
+        R[:,-1] += (Ux_face[1:,-1] - Ux_face[0:-1,-1])/self.dx * 1e-3
         F = F.reshape((self.n+1)*self.nvar)
         R = R.reshape(self.n*self.nvar)
         assert(same_address(F, self.F))
@@ -313,6 +382,8 @@ class EulerEquation(object):
     def solve(self, tf = 0.1, dt = 1e-4):
         self.R = np.zeros(self.n*self.nvar)
         self.U = np.zeros((self.n + 2)*self.nvar)
+        self.Ux_face = np.zeros((self.n + 1)*self.nvar)
+        self.Ux_center = np.zeros(self.n*self.nvar)
         self.F = np.zeros((self.n + 1)*self.nvar)
         self.Ul = np.zeros((self.n+1)*self.nvar)
         self.Ur = np.zeros((self.n+1)*self.nvar)
@@ -333,7 +404,7 @@ class EulerEquation(object):
             #values = result[3]
             #N = self.n*self.nvar
 
-            dt = self.calc_dt()*0.5
+            dt = self.calc_dt()*0.1
             #print dt
             #drdu = -sp.csr_matrix((values, (ridx, cidx)), shape=(N, N)) + sp.eye(N)/dt
             #du = spla.spsolve(drdu, R)
@@ -349,7 +420,7 @@ class EulerEquation(object):
 if __name__ == "__main__":
     qleft = np.array([1.0, 0.0, 1.0])
     qright = np.array([0.125, 0.0, 0.1])
-    eqn = EulerEquation(n=1001)
+    eqn = EulerEquation(n=201)
     eqn.initialize_sod(qleft, qright)
     eqn.solve(tf=0.2)
     rho, rhou, rhoE, rhoY = eqn.get_solution()
