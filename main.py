@@ -11,11 +11,23 @@ def same_address(x, y):
 class constants(object):
     gamma = 1.4
     gamma_m = gamma - 1.0
+    c_mu = 0.204
+    c_a = 0.339
+    c_b = 0.857
+    c_d = 0.354
+    c_l = 0.283
+    n_a = 0.060
+    n_e = 0.060
+    n_k = 0.060
+    n_l = 0.030
+    n_y = 0.060
+    c = 0.0
+    R = 8.314
     
 class EulerEquation(object):
     def __init__(self, n=11):
         self.n = n - 1
-        self.nscalar = 2
+        self.nscalar = 4
         self.nvar = 3 + self.nscalar
         self.x = np.linspace(-0.5, 0.5, self.n + 1)
         self.dx = self.x[1] - self.x[0]
@@ -62,7 +74,7 @@ class EulerEquation(object):
 
         for scalar in range(self.nscalar):
             idx = self.get_scalar_index(scalar)
-            Q[:self.n/2, idx] = 1.0 #+ idx
+            Q[:self.n/2, idx] = 1.0 + idx*0.05
             Q[self.n/2:, idx] = 0.0 #+ idx
         
         Q = Q.reshape(self.n*self.nvar)
@@ -264,7 +276,7 @@ class EulerEquation(object):
             U_star_2 = e/rho + (Ss-u)*(Ss + p/(rho*(S-u)))
             U_star_2 = U_star_2 * fac
             #print fac.shape
-            fac = np.tile(fac, (2,1)).T
+            fac = np.tile(fac, (self.nscalar,1)).T
             #print fac.shape, Y.shape
             U_star_3 = Y * fac
             return U_star_0, U_star_1, U_star_2, U_star_3
@@ -324,19 +336,32 @@ class EulerEquation(object):
         assert(same_address(Ur, self.Ur))
         assert(same_address(F, self.F))
 
-    
+
+    def calc_viscous_flux(self):
+        Ux_face = self.Ux_face.reshape([self.n+1, self.nvar])
+        Fv = self.Fv.reshape([self.n+1, self.nvar])
+        Fv[:,:] = 0.0
+        Fv[:,3] = Ux_face[:,3] * 1e-3
+        #print Fv[:,3].max()
+
+    def calc_source(self):
+        S = self.S.reshape([self.n, self.nvar])
+        Ux_center = self.Ux_center.reshape([self.n, self.nvar])
+        S[:,4] = Ux_center[:,2]*0.1
         
     def calc_residual(self):
         self.set_bc()
         self.reconstruct()
         self.calc_flux_hllc()
-        
+        self.calc_viscous_flux()
+        self.calc_source()
         R = self.R.reshape([self.n, self.nvar])
         F = self.F.reshape([self.n+1, self.nvar])
+        Fv = self.Fv.reshape([self.n+1, self.nvar])
+        S = self.S.reshape([self.n, self.nvar])
         R[:,:] = - (F[1:,:] - F[0:-1,:])/self.dx
-
-        Ux_face = self.Ux_face.reshape([self.n+1, self.nvar])
-        R[:,-1] += (Ux_face[1:,-1] - Ux_face[0:-1,-1])/self.dx * 1e-3
+        R[:,:] += (Fv[1:,:] - Fv[0:-1,:])/self.dx
+        R[:,:] += S[:,:]
         F = F.reshape((self.n+1)*self.nvar)
         R = R.reshape(self.n*self.nvar)
         assert(same_address(F, self.F))
@@ -381,10 +406,12 @@ class EulerEquation(object):
 
     def solve(self, tf = 0.1, dt = 1e-4):
         self.R = np.zeros(self.n*self.nvar)
+        self.S = np.zeros(self.n*self.nvar)
         self.U = np.zeros((self.n + 2)*self.nvar)
         self.Ux_face = np.zeros((self.n + 1)*self.nvar)
         self.Ux_center = np.zeros(self.n*self.nvar)
         self.F = np.zeros((self.n + 1)*self.nvar)
+        self.Fv = np.zeros((self.n + 1)*self.nvar)
         self.Ul = np.zeros((self.n+1)*self.nvar)
         self.Ur = np.zeros((self.n+1)*self.nvar)
         #self.record_tape()
