@@ -28,6 +28,7 @@ class constants(object):
     n_y = 0.060
     c = 0.0
     R = 8.314
+    g = 9.8 * 100.0
     
 class EulerEquation(object):
     def __init__(self, n=11, nscalar=0):
@@ -67,7 +68,7 @@ class EulerEquation(object):
         if type(scalar) == type(1):
             return 3 + scalar
         elif type(scalar) == type(""):
-            return self.scalar_map[scalar]
+            return 3 + self.scalar_map[scalar]
     def calc_press(self, Q):
         output = []
         rho = Q[:, 0]
@@ -115,14 +116,23 @@ class EulerEquation(object):
 
         
         rho[1:-1], u[1:-1], p[1:-1], Y[1:-1,:] = self.calc_press(Q)
+        tmpbc = False
         rho[0] = rho[1]
-        u[0] = u[1]
+        if tmpbc:
+            u[0] = u[1]
+        else:
+            u[0] = -u[1]
+            
         p[0] = p[1]
         Y[0,:] = Y[1,:]
 
         
         rho[-1] = rho[-2]
-        u[-1] = u[-2]
+        if tmpbc:
+            u[-1] = u[-2]
+        else:
+            u[-1] = -u[-2]
+
         p[-1] = p[-2]
         Y[-1,:] = Y[-2,:]
         
@@ -351,21 +361,16 @@ class EulerEquation(object):
         Ux_face = self.Ux_face.reshape([self.n+1, self.nvar])
         Fv = self.Fv.reshape([self.n+1, self.nvar])
         Fv[:,:] = 0.0
-        if self.nscalar > 0:
-            Fv[:,3] = Ux_face[:,3] * 1e-3
-        #print Fv[:,3].max()
 
     def calc_source(self):
         S = self.S.reshape([self.n, self.nvar])
-        Ux_center = self.Ux_center.reshape([self.n, self.nvar])
-        if self.nscalar > 0:
-            S[:,self.get_scalar_index("Y_1")] = Ux_center[:,2]*0.1
-
+        S[:,:] = 0.0
     def temporal_hook(self):
         pass
             
     def calc_residual(self):
         self.set_bc()
+        self.temporal_hook()
         self.reconstruct()
         self.calc_flux_hllc()
         self.calc_viscous_flux()
@@ -419,7 +424,10 @@ class EulerEquation(object):
     def calc_step(self):
         self.calc_residual()
 
-    def solve(self, tf = 0.1, dt = 1e-4):
+    def solve(self, tf = 0.1, dt = 1e-4, animation = False, cfl=1.0, print_step=100):
+        if animation:
+            plt.ion()
+            plt.figure(figsize=(10,10))
         self.R = np.zeros(self.n*self.nvar)
         self.S = np.zeros(self.n*self.nvar)
         self.U = np.zeros((self.n + 2)*self.nvar)
@@ -445,7 +453,7 @@ class EulerEquation(object):
             #values = result[3]
             #N = self.n*self.nvar
 
-            dt = self.calc_dt()*0.1
+            dt = self.calc_dt()*cfl
             #print dt
             #drdu = -sp.csr_matrix((values, (ridx, cidx)), shape=(N, N)) + sp.eye(N)/dt
             #du = spla.spsolve(drdu, R)
@@ -456,16 +464,51 @@ class EulerEquation(object):
             #plt.spy(drdu)
             #plt.show()
             t += dt
-            if int(t/dt)%100 == 0: 
+            if int(t/dt)%print_step == 0: 
                 self.logger.info("Time = %.2e/%.2e (%.01f%% complete)"%(t, tf, t/tf*100))
+                if animation:
+                    rho, u, p, Y = self.get_solution_primvars()
+                    plt.clf()
+                    plt.subplot(2,4,1)
+                    plt.title("Density")
+                    plt.plot(self.xc, rho, 'r-', lw=1, label="Density")
+                    plt.xlim(-0.5, 0.5)
+                    
+                    plt.subplot(2,4,2)
+                    plt.title("Velocity")
+                    plt.plot(self.xc, u, 'r-', lw=1, label="Velocity")
+                    plt.xlim(-0.5, 0.5)
+                    
+                    plt.subplot(2,4,3)
+                    plt.title("Pressure")
+                    plt.plot(self.xc, p, 'r-', lw=1, label="Pressure")
+                    plt.xlim(-0.5, 0.5)
+                    
+                    if self.nscalar > 0:
+                        for i in range(self.nscalar):
+                            plt.subplot(2,4,4+i)
+                            label = self.scalar_map.keys()[self.scalar_map.values().index(i)]
+                            plt.title(label)
+                            plt.plot(self.xc, Y[:,i], 'r-', lw=1, label=self.scalar_map.keys()[self.scalar_map.values().index(i)])
+                            plt.xlim(-0.5, 0.5)
 
+                    
+                    #plt.legend(loc=1)
+                    plt.show()
+                    name = str(int(t/dt)//100)
+                    name = name.zfill(10)
+                    plt.savefig("figures/%s.png"%name)
+                    #plt.pause(.000001)
             if t > tf:
                 self.logger.info("Time = %.2e/%.2e (%.01f%% complete)"%(t, tf, t/tf*100))
+                if animation:
+                    plt.ioff()
                 break
+            
 if __name__ == "__main__":
     qleft = np.array([1.0, 0.0, 1.0])
     qright = np.array([0.125, 0.0, 0.1])
-    eqn = EulerEquation(n=501)
+    eqn = EulerEquation(n=1001)
     eqn.initialize_sod(qleft, qright)
     eqn.solve(tf=0.2)
     rho, rhou, rhoE, rhoY = eqn.get_solution()
