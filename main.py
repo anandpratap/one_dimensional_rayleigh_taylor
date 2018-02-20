@@ -1,3 +1,7 @@
+try:
+    profile
+except NameError:
+    profile = lambda x: x
 import logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -43,14 +47,18 @@ class EulerEquation(object):
         self.dx = self.x[1] - self.x[0]
         self.xc = 0.5*(self.x[0:-1] + self.x[1:])
         self.Q = np.zeros(self.n*self.nvar)
-
-    def calc_gradient_face(self, y):
-        dydx = (y[1:] - y[0:-1])/self.dx
-        return dydx
-
-    def calc_gradient_center(self, y):
-        dydx = (y[2:] - y[0:-2])/(2.0*self.dx)
-        return dydx
+    @profile
+    def calc_gradient_face(self):
+        Ux_face = self.Ux_face.reshape([self.n+1, self.nvar])
+        U = self.U.reshape([self.n+2, self.nvar])
+        Ux_face[:,:] = (U[1:,:] - U[0:-1,:])/self.dx
+        
+    @profile
+    def calc_gradient_center(self):
+        Ux_center = self.Ux_center.reshape([self.n, self.nvar])
+        U = self.U.reshape([self.n+2, self.nvar])
+        Ux_center = (U[2:,:] - U[0:-2,:])/(2.0*self.dx)
+   
     
     def calc_dt(self):
         rho, u, p, Y = self.get_solution_primvars()
@@ -69,13 +77,15 @@ class EulerEquation(object):
             return 3 + scalar
         elif type(scalar) == type(""):
             return 3 + self.scalar_map[scalar]
+    @profile
     def calc_press(self, Q):
         output = []
         rho = Q[:, 0]
-        u = Q[:, 1]/Q[:, 0]
-        p = (constants.gamma-1.0)*(Q[:,2] - 0.5*Q[:,1]**2/Q[:,0])
+        inv_rho = 1.0/rho
+        u = Q[:, 1]*inv_rho
+        p = (constants.gamma-1.0)*(Q[:,2] - 0.5*Q[:,1]*Q[:,1]*inv_rho)
         output = [rho, u, p]
-        Y = Q[:, 3:]/np.tile(Q[:, 0], (self.nscalar,1)).T
+        Y = Q[:, 3:]*inv_rho[:,np.newaxis]
         output.append(Y)
         return output
     
@@ -104,7 +114,7 @@ class EulerEquation(object):
         Q = self.Q.reshape([self.n, self.nvar])
         rho, u, p, Y = self.calc_press(Q)
         return rho, u, p, Y
-
+    @profile
     def set_bc(self):
         U = self.U.reshape([self.n+2, self.nvar])
         Q = self.Q.reshape([self.n, self.nvar])
@@ -136,40 +146,11 @@ class EulerEquation(object):
         p[-1] = p[-2]
         Y[-1,:] = Y[-2,:]
         
-        drho = self.calc_gradient_face(rho)
-        du = self.calc_gradient_face(u)
-        dp = self.calc_gradient_face(p)
-        dY = self.calc_gradient_face(Y)
-
-        drhoc = self.calc_gradient_center(rho)
-        duc = self.calc_gradient_center(u)
-        dpc = self.calc_gradient_center(p)
-        dYc = self.calc_gradient_center(Y)
-
-        Ux_face = self.Ux_face.reshape([self.n+1, self.nvar])
-        Ux_center = self.Ux_center.reshape([self.n, self.nvar])
-        
-
-        Ux_face[:,0] = drho
-        Ux_face[:,1] = du
-        Ux_face[:,2] = dp
-        Ux_face[:,3:] = dY[:,:]
-
-        Ux_center[:,0] = drhoc
-        Ux_center[:,1] = duc
-        Ux_center[:,2] = dpc
-        Ux_center[:,3:] = dYc[:,:]
-        #plt.figure()
-        #plt.plot(0.5*(dY[1:,0]+dY[0:-1,0]), 'rx-')
-        #plt.plot(dYc[:,0], 'gx-')
-        #plt.show()
+        self.calc_gradient_face()
+        self.calc_gradient_center()
         
         U = U.reshape((self.n+2)*self.nvar)
         assert(same_address(U, self.U))
-        Ux_face = Ux_face.reshape((self.n+1)*self.nvar)
-        assert(same_address(Ux_face, self.Ux_face))
-        Ux_center = Ux_center.reshape(self.n*self.nvar)
-        assert(same_address(Ux_center, self.Ux_center))
         
     def reconstruct(self):
         U = self.U.reshape([self.n+2, self.nvar])
@@ -245,7 +226,7 @@ class EulerEquation(object):
         assert(same_address(Ul, self.Ul))
         assert(same_address(Ur, self.Ur))
         assert(same_address(F, self.F))
-        
+    @profile
     def calc_flux_hllc(self):
         F = self.F.reshape([self.n+1, self.nvar])
 
@@ -288,7 +269,7 @@ class EulerEquation(object):
         region_2 = np.logical_and(Sr >=0, S_star <= 0)
         region_3 = Sr < 0
     
-    
+        @profile
         def calc_ustar(rho, u, p, e, Y, S, Ss):
             fac = rho * (S - u)/(S - Ss)
             U_star_0 = 1.0 * fac
@@ -296,9 +277,11 @@ class EulerEquation(object):
             U_star_2 = e/rho + (Ss-u)*(Ss + p/(rho*(S-u)))
             U_star_2 = U_star_2 * fac
             #print fac.shape
-            fac = np.tile(fac, (self.nscalar,1)).T
+            #print self.nscalar
+            #fac = fac
+            #fac = np.tile(fac, (self.nscalar,1)).T
             #print fac.shape, Y.shape
-            U_star_3 = Y * fac
+            U_star_3 = Y * fac[:,np.newaxis]
             return U_star_0, U_star_1, U_star_2, U_star_3
 
 
@@ -367,7 +350,7 @@ class EulerEquation(object):
         S[:,:] = 0.0
     def temporal_hook(self):
         pass
-            
+    @profile
     def calc_residual(self):
         self.set_bc()
         self.temporal_hook()
@@ -424,7 +407,7 @@ class EulerEquation(object):
     def calc_step(self):
         self.calc_residual()
 
-    def solve(self, tf = 0.1, dt = 1e-4, animation = False, cfl=1.0, print_step=100):
+    def solve(self, tf = 0.1, dt = 1e-4, animation = False, cfl=1.0, print_step=100, integrator="fe"):
         if animation:
             plt.ion()
             plt.figure(figsize=(10,10))
@@ -444,8 +427,6 @@ class EulerEquation(object):
             #tag = 0
             #options = np.array([0,0,0,0],dtype=int)
             #self.record_tape()
-            self.calc_step()
-            R = self.R.copy()
             #result = ad.colpack.sparse_jac_no_repeat(tag, self.Q, options)
             #nnz = result[0]
             #ridx = result[1]
@@ -453,13 +434,51 @@ class EulerEquation(object):
             #values = result[3]
             #N = self.n*self.nvar
 
-            dt = self.calc_dt()*cfl
             #print dt
             #drdu = -sp.csr_matrix((values, (ridx, cidx)), shape=(N, N)) + sp.eye(N)/dt
             #du = spla.spsolve(drdu, R)
             #print np.linalg.norm(R - self.R)
             #self.Q  = self.Q + du
-            self.Q  = self.Q + R*dt
+            if integrator == "fe":
+                self.calc_step()
+                R = self.R.copy()
+                dt = self.calc_dt()*cfl
+                self.Q  = self.Q + R*dt
+            elif integrator == "rk2":
+                dt = self.calc_dt()*cfl
+
+                self.calc_step()
+                k1 = self.R.copy()
+                Qn = self.Q.copy()
+                
+                self.Q  = Qn + k1*dt/2.0
+                self.calc_step()
+                k2 = self.R.copy()
+
+                self.Q = Qn + k2*dt
+                
+            elif integrator == "rk4":
+                dt = self.calc_dt()*cfl
+
+                self.calc_step()
+                k1 = self.R.copy()
+                Qn = self.Q.copy()
+                
+                self.Q  = Qn + k1*dt/2.0
+                self.calc_step()
+                k2 = self.R.copy()
+
+                self.Q  = Qn + k2*dt/2.0
+                self.calc_step()
+                k3 = self.R.copy()
+
+                self.Q  = Qn + k3*dt
+                self.calc_step()
+                k4 = self.R.copy()
+
+                self.Q = Qn + dt*(k1/6.0 + k2/3.0 + k3/3.0 + k4/6.0)
+
+                
             #print nnz
             #plt.spy(drdu)
             #plt.show()
@@ -508,9 +527,9 @@ class EulerEquation(object):
 if __name__ == "__main__":
     qleft = np.array([1.0, 0.0, 1.0])
     qright = np.array([0.125, 0.0, 0.1])
-    eqn = EulerEquation(n=1001)
+    eqn = EulerEquation(n=101, nscalar=0)
     eqn.initialize_sod(qleft, qright)
-    eqn.solve(tf=0.2)
+    eqn.solve(tf=0.2, cfl=0.1, integrator="fe")
     rho, rhou, rhoE, rhoY = eqn.get_solution()
     rho, u, p, Y = eqn.get_solution_primvars()
 
@@ -521,15 +540,28 @@ if __name__ == "__main__":
     if eqn.nscalar > 0:
         plt.plot(eqn.xc, rhoY, 'cx-', lw=1, label="Y")
 
+    eqn = EulerEquation(n=101, nscalar=0)
+    eqn.initialize_sod(qleft, qright)
+    eqn.solve(tf=0.2, cfl=0.1, integrator="rk4")
+    rho, rhou, rhoE, rhoY = eqn.get_solution()
+    rho, u, p, Y = eqn.get_solution_primvars()
+
+    plt.plot(eqn.xc, rho, 'r--', lw=1, label="Density")
+    plt.plot(eqn.xc, u, 'g--', lw=1, label="Velocity")
+    plt.plot(eqn.xc, p, 'b--', lw=1, label="Pressure")
+    if eqn.nscalar > 0:
+        plt.plot(eqn.xc, rhoY, 'c--', lw=1, label="Y")
+
+        
     # #plt.plot(eqn.xc, rhou, 'x-', lw=1)
     # #plt.plot(eqn.xc, rhoE, 'x-', lw=1)
 
     positions, regions, values = sod.solve(left_state=(1, 1, 0), right_state=(0.1, 0.125, 0.),
                                            geometry=(-0.5, 0.5, 0.0), t=0.2, gamma=1.4, npts=101)
 
-    plt.plot(values['x'], values['rho'], 'r--', lw=1, label="Density")
-    plt.plot(values['x'], values['u'], 'g--', lw=1, label="Velocity")
-    plt.plot(values['x'], values['p'], 'b--', lw=1, label="Pressure")
+    plt.plot(values['x'], values['rho'], 'r-', lw=2, label="Density")
+    plt.plot(values['x'], values['u'], 'g-', lw=2, label="Velocity")
+    plt.plot(values['x'], values['p'], 'b-', lw=2, label="Pressure")
 
     plt.show()
     
