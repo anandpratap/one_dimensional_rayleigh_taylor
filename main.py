@@ -17,6 +17,7 @@ import scipy.sparse.linalg as spla
 import sod
 def same_address(x, y):
     return x.__array_interface__['data'] == y.__array_interface__['data']
+
 class constants(object):
     gamma = 1.4
     gamma_m = gamma - 1.0
@@ -42,7 +43,7 @@ class EulerEquation(object):
         self.nvar = 3 + self.nscalar
         self.scalar_map = {}
         for i in range(self.nscalar):
-            self.scalar_map["Y_%i"%i] = 3 + i
+            self.scalar_map["Y_%i"%i] = i
         self.x = np.linspace(-0.5, 0.5, self.n + 1)
         self.dx = self.x[1] - self.x[0]
         self.xc = 0.5*(self.x[0:-1] + self.x[1:])
@@ -57,7 +58,7 @@ class EulerEquation(object):
     def calc_gradient_center(self):
         Ux_center = self.Ux_center.reshape([self.n, self.nvar])
         U = self.U.reshape([self.n+2, self.nvar])
-        Ux_center = (U[2:,:] - U[0:-2,:])/(2.0*self.dx)
+        Ux_center[:,:] = (U[2:,:] - U[0:-2,:])/(2.0*self.dx)
    
     
     def calc_dt(self):
@@ -145,11 +146,10 @@ class EulerEquation(object):
 
         p[-1] = p[-2]
         Y[-1,:] = Y[-2,:]
-        
+
+        U = U.reshape((self.n+2)*self.nvar)
         self.calc_gradient_face()
         self.calc_gradient_center()
-        
-        U = U.reshape((self.n+2)*self.nvar)
         assert(same_address(U, self.U))
         
     def reconstruct(self):
@@ -355,7 +355,13 @@ class EulerEquation(object):
         self.set_bc()
         self.temporal_hook()
         self.reconstruct()
-        self.calc_flux_hllc()
+        if self.flux == "roe":
+            self.calc_flux_roe()
+        elif self.flux == "hllc":
+            self.calc_flux_hllc()
+        else:
+            raise ValueError("Flux not defined.")
+
         self.calc_viscous_flux()
         self.calc_source()
         R = self.R.reshape([self.n, self.nvar])
@@ -407,7 +413,7 @@ class EulerEquation(object):
     def calc_step(self):
         self.calc_residual()
 
-    def solve(self, tf = 0.1, dt = 1e-4, animation = False, cfl=1.0, print_step=100, integrator="fe"):
+    def solve(self, tf = 0.1, dt = 1e-4, animation = False, cfl=1.0, print_step=100, integrator="fe", flux="hllc"):
         if animation:
             plt.ion()
             plt.figure(figsize=(10,10))
@@ -420,6 +426,7 @@ class EulerEquation(object):
         self.Fv = np.zeros((self.n + 1)*self.nvar)
         self.Ul = np.zeros((self.n+1)*self.nvar)
         self.Ur = np.zeros((self.n+1)*self.nvar)
+        self.flux = flux
         #self.record_tape()
         t = 0.0
 
@@ -505,10 +512,10 @@ class EulerEquation(object):
                     
                     if self.nscalar > 0:
                         for i in range(self.nscalar):
-                            plt.subplot(2,4,4+i)
+                            plt.subplot(2,4,4)
                             label = self.scalar_map.keys()[self.scalar_map.values().index(i)]
                             plt.title(label)
-                            plt.plot(self.xc, Y[:,i], 'r-', lw=1, label=self.scalar_map.keys()[self.scalar_map.values().index(i)])
+                            plt.plot(self.xc, Y[:,i], '-', lw=1, label=self.scalar_map.keys()[self.scalar_map.values().index(i)])
                             plt.xlim(-0.5, 0.5)
 
                     
@@ -527,9 +534,9 @@ class EulerEquation(object):
 if __name__ == "__main__":
     qleft = np.array([1.0, 0.0, 1.0])
     qright = np.array([0.125, 0.0, 0.1])
-    eqn = EulerEquation(n=101, nscalar=0)
+    eqn = EulerEquation(n=401, nscalar=0)
     eqn.initialize_sod(qleft, qright)
-    eqn.solve(tf=0.2, cfl=0.1, integrator="fe")
+    eqn.solve(tf=0.2, cfl=0.1, integrator="fe", flux="roe")
     rho, rhou, rhoE, rhoY = eqn.get_solution()
     rho, u, p, Y = eqn.get_solution_primvars()
 
@@ -540,9 +547,9 @@ if __name__ == "__main__":
     if eqn.nscalar > 0:
         plt.plot(eqn.xc, rhoY, 'cx-', lw=1, label="Y")
 
-    eqn = EulerEquation(n=101, nscalar=0)
+    eqn = EulerEquation(n=401, nscalar=0)
     eqn.initialize_sod(qleft, qright)
-    eqn.solve(tf=0.2, cfl=0.1, integrator="rk4")
+    eqn.solve(tf=0.2, cfl=0.1, integrator="fe", flux="hllc")
     rho, rhou, rhoE, rhoY = eqn.get_solution()
     rho, u, p, Y = eqn.get_solution_primvars()
 
