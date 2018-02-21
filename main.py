@@ -33,7 +33,7 @@ class constants(object):
     n_y = 0.060
     c = 0.0
     R = 8.314
-    g = 9.8 * 100.0
+    g = 9.8 * -1.0
     
 class EulerEquation(object):
     def __init__(self, n=11, nscalar=0):
@@ -59,7 +59,8 @@ class EulerEquation(object):
         Ux_center = self.Ux_center.reshape([self.n, self.nvar])
         U = self.U.reshape([self.n+2, self.nvar])
         Ux_center[:,:] = (U[2:,:] - U[0:-2,:])/(2.0*self.dx)
-   
+        Ux_center[0,:] = (U[2,:] - U[1,:])/self.dx
+        Ux_center[-1,:] = (U[-2,:] - U[-3,:])/self.dx
     
     def calc_dt(self):
         rho, u, p, Y = self.get_solution_primvars()
@@ -131,9 +132,11 @@ class EulerEquation(object):
         rho[0] = rho[1]
         if tmpbc:
             u[0] = u[1]
+            u[0] = 2.0*u[1] - u[2]
         else:
             u[0] = -u[1]
-            
+            u[0] = -(2.0*u[1] - u[2])
+
         p[0] = p[1]
         Y[0,:] = Y[1,:]
 
@@ -141,9 +144,11 @@ class EulerEquation(object):
         rho[-1] = rho[-2]
         if tmpbc:
             u[-1] = u[-2]
+            u[-1] = 2.0*u[-2] - u[-3]
         else:
             u[-1] = -u[-2]
-
+            u[-1] = -(2.0*u[-2] - u[-3])
+            
         p[-1] = p[-2]
         Y[-1,:] = Y[-2,:]
 
@@ -512,7 +517,7 @@ class EulerEquation(object):
                     
                     if self.nscalar > 0:
                         for i in range(self.nscalar):
-                            plt.subplot(2,4,4)
+                            plt.subplot(2,4,4+i)
                             label = self.scalar_map.keys()[self.scalar_map.values().index(i)]
                             plt.title(label)
                             plt.plot(self.xc, Y[:,i], '-', lw=1, label=self.scalar_map.keys()[self.scalar_map.values().index(i)])
@@ -523,8 +528,8 @@ class EulerEquation(object):
                     plt.show()
                     name = str(int(t/dt)//100)
                     name = name.zfill(10)
-                    plt.savefig("figures/%s.png"%name)
-                    #plt.pause(.000001)
+                    #plt.savefig("figures/%s.png"%name)
+                    plt.pause(.00000001)
             if t > tf:
                 self.logger.info("Time = %.2e/%.2e (%.01f%% complete)"%(t, tf, t/tf*100))
                 if animation:
