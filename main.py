@@ -31,6 +31,13 @@ vsafe_divide = np.vectorize(safe_divide)
 def same_address(x, y):
     return x.__array_interface__['data'] == y.__array_interface__['data']
 
+def slope_limiter(r):
+    if r>=0.0:
+        return 2.0*r/(1.0 + r)
+    else:
+        return 0
+vslope_limiter = np.vectorize(slope_limiter)
+
 class constants(object):
     gamma = 1.4
     gamma_m = gamma - 1.0
@@ -208,14 +215,7 @@ class EulerEquation(object):
             Ul[:, :] = U[0:-1,:]
             Ur[:, :] = U[1:,:]
         else:
-            def slope_limiter(r):
-                if r>=0.0:
-                    return 2.0*r/(1.0 + r)
-                else:
-                    return 0
-            vslope_limiter = self.limiter.limiter#np.vectorize(slope_limiter)
-                
-            rp = vsafe_divide(U[1:-1,:] - U[0:-2,:], U[2:,:] - U[1:-1,:])
+            rp = vsafe_divide(U[2:-1,:] - U[1:-2,:], U[1:-2,:] - U[0:-3,:])
             rm = vsafe_divide(1.0, rp)
             phip = vslope_limiter(rp)
             phim = vslope_limiter(rm)
@@ -225,8 +225,8 @@ class EulerEquation(object):
             #print Ul[1:,:].shape
             #print phip.max(), phip.min()
             #print phim.max(), phim.min()
-            Ul[1:, :] = Ul[1:, :] + 0.5*phip[:,:] * (U[1:-1,:] - U[0:-2,:])
-            Ur[0:-1, :] = Ur[0:-1, :] - 0.5*phim[:,:] * (U[2:,:] - U[1:-1,:])
+            Ul[1:-1, :] = U[1:-2, :] + 0.5*phip[:,:] * (U[1:-2,:] - U[0:-3,:])
+            Ur[0:-2, :] = U[1:-2, :] - 0.5*phim[:,:] * (U[2:-1,:] - U[1:-2,:])
             # plt.figure()
             # plt.ioff()
             # plt.plot(Ul[:,0])
@@ -629,7 +629,8 @@ if __name__ == "__main__":
     qright = np.array([0.125, 0.0, 0.1])
     eqn = EulerEquation(n=401, nscalar=0)
     eqn.initialize(qleft, qright)
-    eqn.solve(tf=0.2, cfl=0.5, integrator="rk2", flux="hllc", print_step=1, order=2)
+    tf = 0.05
+    eqn.solve(tf=tf, cfl=0.5, integrator="rk2", flux="hllc", print_step=1, order=2)
     rho, rhou, rhoE, rhoY = eqn.get_solution()
     rho, u, p, Y = eqn.get_solution_primvars()
 
@@ -642,7 +643,7 @@ if __name__ == "__main__":
 
     eqn = EulerEquation(n=401, nscalar=0)
     eqn.initialize(qleft, qright)
-    eqn.solve(tf=0.2, cfl=0.1, integrator="fe", flux="hllc")
+    eqn.solve(tf=tf, cfl=0.5, integrator="rk2", flux="hllc")
     rho, rhou, rhoE, rhoY = eqn.get_solution()
     rho, u, p, Y = eqn.get_solution_primvars()
 
@@ -657,7 +658,7 @@ if __name__ == "__main__":
     # #plt.plot(eqn.xc, rhoE, 'x-', lw=1)
 
     positions, regions, values = sod.solve(left_state=(1, 1, 0), right_state=(0.1, 0.125, 0.),
-                                           geometry=(-0.5, 0.5, 0.0), t=0.2, gamma=1.4, npts=101)
+                                           geometry=(-0.5, 0.5, 0.0), t=tf, gamma=1.4, npts=101)
 
     plt.plot(values['x'], values['rho'], 'r-', lw=2, label="Density")
     plt.plot(values['x'], values['u'], 'g-', lw=2, label="Velocity")
