@@ -108,7 +108,7 @@ class EulerEquation(object):
         output.append(Y)
         return output
     
-    def initialize_sod(self, qleft, qright):
+    def initialize(self, qleft, qright):
         Q = self.Q.reshape([self.n, self.nvar])
         Q[:self.n/2, 0], Q[:self.n/2, 1], Q[:self.n/2, 2] = self.calc_E(qleft[0], qleft[1], qleft[2]);
         Q[self.n/2:, 0], Q[self.n/2:, 1], Q[self.n/2:, 2] = self.calc_E(qright[0], qright[1], qright[2]);
@@ -507,6 +507,18 @@ class EulerEquation(object):
         #self.record_tape()
         t = 0.0
         step = 0
+
+        if integrator == "rk2":
+            k1 = np.zeros_like(self.R)
+            Qn = np.zeros_like(self.Q)
+            k2 = np.zeros_like(self.R)
+        elif integrator == "rk4":
+            k1 = np.zeros_like(self.R)
+            Qn = np.zeros_like(self.Q)
+            k2 = np.zeros_like(self.R)
+            k3 = np.zeros_like(self.R)
+            k4 = np.zeros_like(self.R)
+            
         while 1:
             #tag = 0
             #options = np.array([0,0,0,0],dtype=int)
@@ -532,12 +544,12 @@ class EulerEquation(object):
                 dt = self.calc_dt()*cfl
 
                 self.calc_step()
-                k1 = self.R.copy()
-                Qn = self.Q.copy()
+                k1[:] = self.R[:]
+                Qn[:] = self.Q[:]
                 
                 self.Q  = Qn + k1*dt/2.0
                 self.calc_step()
-                k2 = self.R.copy()
+                k2[:] = self.R[:]
 
                 self.Q = Qn + k2*dt
                 
@@ -545,20 +557,20 @@ class EulerEquation(object):
                 dt = self.calc_dt()*cfl
 
                 self.calc_step()
-                k1 = self.R.copy()
-                Qn = self.Q.copy()
+                k1[:] = self.R[:]
+                Qn[:] = self.Q[:]
                 
                 self.Q  = Qn + k1*dt/2.0
                 self.calc_step()
-                k2 = self.R.copy()
+                k2[:] = self.R[:]
 
                 self.Q  = Qn + k2*dt/2.0
                 self.calc_step()
-                k3 = self.R.copy()
+                k3[:] = self.R[:]
 
                 self.Q  = Qn + k3*dt
                 self.calc_step()
-                k4 = self.R.copy()
+                k4[:] = self.R[:]
 
                 self.Q = Qn + dt*(k1/6.0 + k2/3.0 + k3/3.0 + k4/6.0)
 
@@ -616,7 +628,7 @@ if __name__ == "__main__":
     qleft = np.array([1.0, 0.0, 1.0])
     qright = np.array([0.125, 0.0, 0.1])
     eqn = EulerEquation(n=401, nscalar=0)
-    eqn.initialize_sod(qleft, qright)
+    eqn.initialize(qleft, qright)
     eqn.solve(tf=0.2, cfl=0.5, integrator="rk2", flux="hllc", print_step=1, order=2)
     rho, rhou, rhoE, rhoY = eqn.get_solution()
     rho, u, p, Y = eqn.get_solution_primvars()
@@ -629,7 +641,7 @@ if __name__ == "__main__":
         plt.plot(eqn.xc, rhoY, 'cx-', lw=1, label="Y")
 
     eqn = EulerEquation(n=401, nscalar=0)
-    eqn.initialize_sod(qleft, qright)
+    eqn.initialize(qleft, qright)
     eqn.solve(tf=0.2, cfl=0.1, integrator="fe", flux="hllc")
     rho, rhou, rhoE, rhoY = eqn.get_solution()
     rho, u, p, Y = eqn.get_solution_primvars()
