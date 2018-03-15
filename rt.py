@@ -1,16 +1,5 @@
 from main import *
 
-def safe_divide(x, y):
-    epsilon = 1e-16
-    return x/(y+epsilon)
-# if np.abs(x) > epsilon and np.abs(y) < epsilon:
-#         return 1e14
-#     elif np.abs(x) < epsilon and np.abs(y) < epsilon:
-#         return 0.0
-#     else:
-#         return x/y
-
-vsafe_divide = np.vectorize(safe_divide)
 def calc_volumep(Yh, Yl, rho, At):
     rhoh, rhol = calc_rhop(At)
     vh = rho*Yh/rhoh
@@ -45,27 +34,48 @@ class RT(EulerEquation):
         T = constants.g/constants.R * self.xc + 293.0
 
 
-        e_h = R/(gamma - 1.0) * T
-        e_l = rho_h*e_h/rho_l
+#        e_h = R/(gamma - 1.0) * T
+#        e_l = rho_h*e_h/rho_l
         
 
         Yh[:self.n/2] = 0.0
         Yh[self.n/2:] = 1.0
 
         Yl = 1.0 - Yh
-        e = Yh * e_h + Yl * e_l
-        
-
-        p_h = (gamma - 1.0)*rho_h*e_h
-        p_l = (gamma - 1.0)*rho_l*e_l
-
+               
         
         rho[:self.n/2] = rho_l
         rho[self.n/2:] = rho_h
 
+        # T0 = reference temperature = 293 K
+        # P0 = reference pressure = 1 atm
+        # R0 = universal gas constant = 8.314 J/mol*K
+        # MW_H = heavy molecular weight = rho_H * R0 * T0 / P0
+        # MW_L = light molecular weight = rho_L * R0 * T0 / P0
+        # T_L = initial temperature in light gas = g*(MW_L/R0)*y + T0
+        # T_H = initial temperature in heavy gas = g*(MW_H/R0)*y + T0
+        # CV_L = specific heat in light gas = R0/(MW_H*(gamma-1))
+        # CV_H = specific heat in heavy gas = R0/(MW_L*(gamma-1))
+        # e_L = CV_L * T_L
+        # e_H = CV_H * T_H
+        T0 = 293.0
+        P0 = 101325.0
+        R0 = constants.R
+        g = constants.g
+        MW_H = rho_h * R0 * T0 / P0
+        MW_L = rho_l * R0 * T0 / P0
+        T_L =  g*(MW_L/R0)*self.xc + T0
+        T_H =  g*(MW_H/R0)*self.xc + T0
+        CV_L = R0/(MW_L*(gamma-1))
+        CV_H = R0/(MW_H*(gamma-1))
+        e_l = CV_L * T_L
+        e_h = CV_H * T_H
 
-        
-       # fac = (1.0 + self.At)/(1.0 - self.At)*vsafe_divide(Y1,Yl)
+
+        p_h = (gamma - 1.0)*rho_h*e_h
+        p_l = (gamma - 1.0)*rho_l*e_l
+
+        # fac = (1.0 + self.At)/(1.0 - self.At)*vsafe_divide(Y1,Yl)
         
         #v1 = fac/(1.0+fac)
         #v2 = 1.0 - v1
@@ -98,16 +108,16 @@ class RT(EulerEquation):
         Q[self.n/2:, 0], Q[self.n/2:, 1], Q[self.n/2:, 2] = self.calc_Ee(rho[self.n/2:], 0.0, e[self.n/2:]);
 
         idx = self.get_scalar_index("k")
-        k_small = 1e-9
+        k_small = 0.0
         Q[:self.n/2, idx] = k_small * rho[:self.n/2]
         Q[self.n/2:, idx] = k_small * rho[self.n/2:]
         #k_small =
         idx = self.get_scalar_index("L")
-        Q[:, idx] = k_small * rho 
+        Q[:, idx] = 0.0
         Q[self.n/2-2:self.n/2+2, idx] = 4.0e-6 * rho[self.n/2-2:self.n/2+2]
 
         idx = self.get_scalar_index("a_x")
-        Q[:, idx] = k_small * rho
+        Q[:, idx] = 0.0 #k_small * rho
 
         idx = self.get_scalar_index("Y_h")
         Q[:self.n/2, idx] =  Yh[:self.n/2] * rho[:self.n/2]
@@ -255,6 +265,11 @@ class RT(EulerEquation):
         #p = (constants.gamma-1.0)*(Q[:,2] - 0.5*Q[:,1]**2/Q[:,0])
         output = [rho, u, p]
         Y = Q[:, 3:]/np.tile(Q[:, 0], (self.nscalar,1)).T
+        idx = self.get_scalar_index("k")
+        Y[:,idx-3] = np.clip(Y[:,idx-3], 0.0, 1e10)
+        #Y[:,0] = np.maximum(Y[:,0], 1e-12)
+        #print Y[:,0]
+        #print Y[:,3]
         output.append(Y)
         return output
     
@@ -279,6 +294,7 @@ class RT(EulerEquation):
         drhodx = Ux_center[:,0]
         dudx = Ux_center[:,1]
         dpdx = Ux_center[:,2]
+        #print dpdx
 #        print dpdx
         slice_cells = slice(1,-1)
         S[:,1] = rho[slice_cells]*constants.g
@@ -305,12 +321,20 @@ class RT(EulerEquation):
         #print "S0", S[0,:]
         #print "S-1", S[-1,:]
         #S[:,:] = 0.0
+
+    def interpolate_on_face(self, u, ghost=True):
+        if ghost:
+            u_face = 0.5*(u[0:-1] + u[1:])
+        else:
+            raise NotImplementedError("")
+        return u_face
+            
         
     def calc_viscous_flux(self):
         Ux_face = self.Ux_face.reshape([self.n+1, self.nvar])
         Fv = self.Fv.reshape([self.n+1, self.nvar])
-        mut_face = 0.5*(self.mut[0:-1] + self.mut[1:])
-
+        mut_face = self.interpolate_on_face(self.mut)
+        
         idx = self.get_scalar_index("k")
         dkdx_face = Ux_face[:,idx]
         Fv[:,idx] = dkdx_face*mut_face/constants.n_k
@@ -333,17 +357,31 @@ class RT(EulerEquation):
         #Fv[:,:] = 0.0
         Fv[:,2] = self.ex*mut_face/constants.n_e
         #print "mut:", mut_face.max(), mut_face.min()
+
+    def calc_dt(self):
+        rho, u, p, Y = self.get_solution_primvars()
+        a = np.sqrt(constants.gamma*p/rho)
+        lambda_max = np.max(a + np.abs(u))
+        
+        dt_inv = self.dx/lambda_max
+        try:
+            mut = self.mut
+        except:
+            mut = np.array([1e-10])
+        dt_viscous = self.dx*self.dx/np.max(mut)/2.0
+
+        return np.minimum(dt_inv, dt_viscous)
         
         
 if __name__ == "__main__":
     qleft = np.array([1.0, 0.0, 1.0])
     qright = np.array([0.125, 0.0, 0.1])
-    eqn = RT(n=201, nscalar=4)
+    eqn = RT(n=1001, nscalar=4)
     eqn.initialize_sod(qleft, qright)
-    eqn.solve(tf=1.0, cfl = 0.1, animation=True, print_step=10000, integrator="rk2", flux="hllc")
+    eqn.solve(tf=2.0, cfl = 0.1, animation=True, print_step=100, integrator="rk2", flux="hllc", order=1, file_io=True)
     rho, rhou, rhoE, rhoY = eqn.get_solution()
     rho, u, p, Y = eqn.get_solution_primvars()
-    np.savez("data_5.npz", rho=rho, u=u, p=p, Y=Y, x=eqn.xc)
+    #np.savez("data_5.npz", rho=rho, u=u, p=p, Y=Y, x=eqn.xc)
     plt.figure()
     plt.plot(eqn.xc, rho/np.abs(rho).max(), 'r-', lw=1, label="Density")
     plt.plot(eqn.xc, u/np.abs(u).max(), 'gx-', lw=1, label="Velocity")

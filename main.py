@@ -15,6 +15,19 @@ import matplotlib.pyplot as plt
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 import sod
+from limiters import Limiters
+def safe_divide(x, y):
+    epsilon = 1e-10
+    #return x/(y+epsilon)
+    if np.abs(x) > epsilon and np.abs(y) < epsilon:
+        return x/epsilon
+    elif np.abs(x) < epsilon and np.abs(y) < epsilon:
+        return 0.0
+    else:
+        return x/y
+
+vsafe_divide = np.vectorize(safe_divide)
+
 def same_address(x, y):
     return x.__array_interface__['data'] == y.__array_interface__['data']
 
@@ -33,9 +46,12 @@ class constants(object):
     n_y = 0.060
     c = 0.0
     R = 8.314
-    g = 9.8 * -1.0
+    g = 9.8 * -100.0
     
 class EulerEquation(object):
+    """Base class to solve the one dimensional Euler Equation.
+
+    """
     def __init__(self, n=11, nscalar=0):
         self.logger = logging.getLogger(__name__)
         self.n = n - 1
@@ -48,6 +64,7 @@ class EulerEquation(object):
         self.dx = self.x[1] - self.x[0]
         self.xc = 0.5*(self.x[0:-1] + self.x[1:])
         self.Q = np.zeros(self.n*self.nvar)
+        self.limiter = Limiters("koren")
     @profile
     def calc_gradient_face(self):
         Ux_face = self.Ux_face.reshape([self.n+1, self.nvar])
@@ -129,28 +146,54 @@ class EulerEquation(object):
         
         rho[1:-1], u[1:-1], p[1:-1], Y[1:-1,:] = self.calc_press(Q)
         tmpbc = False
-        rho[0] = rho[1]
-        if tmpbc:
-            u[0] = u[1]
-            u[0] = 2.0*u[1] - u[2]
-        else:
-            u[0] = -u[1]
-            u[0] = -(2.0*u[1] - u[2])
 
-        p[0] = p[1]
-        Y[0,:] = Y[1,:]
+        if tmpbc:
+            if self.order == 1:
+                u[0] = u[1]
+            else:
+                u[0] = 2.0*u[1] - u[2]
+        else:
+            if self.order == 1:
+                u[0] = -u[1]
+            else:
+                u[0] = -(2.0*u[1] - u[2])
+            
+        if self.order == 1:
+            rho[0] = rho[1]
+            p[0] = p[1]
+            Y[0,:] = Y[1,:]
+        else:
+            rho[0] = 2.0*rho[1] - rho[2]
+            p[0] = 2.0*p[1] - p[2]
+            Y[0,:] = 2.0*Y[1,:] - Y[2,:]
+
+        #Y[0,0] = -(2.0*Y[1,0] - Y[2,0])
+        #Y[0,3] = -(2.0*Y[1,3] - Y[2,3])
 
         
-        rho[-1] = rho[-2]
+        
         if tmpbc:
-            u[-1] = u[-2]
-            u[-1] = 2.0*u[-2] - u[-3]
+            if self.order == 1:
+                u[-1] = u[-2]
+            else:
+                u[-1] = 2.0*u[-2] - u[-3]
         else:
-            u[-1] = -u[-2]
-            u[-1] = -(2.0*u[-2] - u[-3])
-            
-        p[-1] = p[-2]
-        Y[-1,:] = Y[-2,:]
+            if self.order == 1:
+                u[-1] = -u[-2]
+            else:
+                u[-1] = -(2.0*u[-2] - u[-3])
+
+        if self.order == 1:
+            rho[-1] = rho[-2]
+            p[-1] = p[-2]
+            Y[-1,:] = Y[-2,:]
+        else:
+            rho[-1] = 2.0*rho[-2] - rho[-3]
+            p[-1] = 2.0*p[-2] - p[-3]
+            Y[-1,:] = 2.0*Y[-2,:] - Y[-3,:]
+
+        #Y[-1,0] = -(2.0*Y[-2,0] - Y[-3,0])
+        #Y[-1,3] = -(2.0*Y[-2,3] - Y[-3,3])
 
         U = U.reshape((self.n+2)*self.nvar)
         self.calc_gradient_face()
@@ -161,10 +204,36 @@ class EulerEquation(object):
         U = self.U.reshape([self.n+2, self.nvar])
         Ul = self.Ul.reshape([self.n+1, self.nvar])
         Ur = self.Ur.reshape([self.n+1, self.nvar])
-
-        Ul[:, :] = U[0:-1,:]
-        Ur[:, :] = U[1:,:]
-
+        if self.order==1:
+            Ul[:, :] = U[0:-1,:]
+            Ur[:, :] = U[1:,:]
+        else:
+            def slope_limiter(r):
+                if r>=0.0:
+                    return 2.0*r/(1.0 + r)
+                else:
+                    return 0
+            vslope_limiter = self.limiter.limiter#np.vectorize(slope_limiter)
+                
+            rp = vsafe_divide(U[1:-1,:] - U[0:-2,:], U[2:,:] - U[1:-1,:])
+            rm = vsafe_divide(1.0, rp)
+            phip = vslope_limiter(rp)
+            phim = vslope_limiter(rm)
+            Ul[:, :] = U[0:-1,:]
+            Ur[:, :] = U[1:,:]
+            #print phip.shape
+            #print Ul[1:,:].shape
+            #print phip.max(), phip.min()
+            #print phim.max(), phim.min()
+            Ul[1:, :] = Ul[1:, :] + 0.5*phip[:,:] * (U[1:-1,:] - U[0:-2,:])
+            Ur[0:-1, :] = Ur[0:-1, :] - 0.5*phim[:,:] * (U[2:,:] - U[1:-1,:])
+            # plt.figure()
+            # plt.ioff()
+            # plt.plot(Ul[:,0])
+            # plt.plot(Ur[:,0])
+            # plt.plot(U[0:-1,0])
+            # plt.plot(U[1:,0])
+            # plt.show()
         U = U.reshape((self.n+2)*self.nvar)
         Ul = Ul.reshape((self.n+1)*self.nvar)
         Ur = Ur.reshape((self.n+1)*self.nvar)
@@ -376,6 +445,8 @@ class EulerEquation(object):
         R[:,:] = - (F[1:,:] - F[0:-1,:])/self.dx
         R[:,:] += (Fv[1:,:] - Fv[0:-1,:])/self.dx
         R[:,:] += S[:,:]
+        #print "invid", - (F[1:,1] - F[0:-1,1])/self.dx,
+        #print "source", S[:,1]
         F = F.reshape((self.n+1)*self.nvar)
         R = R.reshape(self.n*self.nvar)
         assert(same_address(F, self.F))
@@ -418,7 +489,7 @@ class EulerEquation(object):
     def calc_step(self):
         self.calc_residual()
 
-    def solve(self, tf = 0.1, dt = 1e-4, animation = False, cfl=1.0, print_step=100, integrator="fe", flux="hllc"):
+    def solve(self, tf = 0.1, dt = 1e-4, animation = False, cfl=1.0, print_step=100, integrator="fe", flux="hllc", order=1, file_io=False):
         if animation:
             plt.ion()
             plt.figure(figsize=(10,10))
@@ -432,9 +503,10 @@ class EulerEquation(object):
         self.Ul = np.zeros((self.n+1)*self.nvar)
         self.Ur = np.zeros((self.n+1)*self.nvar)
         self.flux = flux
+        self.order = order
         #self.record_tape()
         t = 0.0
-
+        step = 0
         while 1:
             #tag = 0
             #options = np.array([0,0,0,0],dtype=int)
@@ -495,7 +567,8 @@ class EulerEquation(object):
             #plt.spy(drdu)
             #plt.show()
             t += dt
-            if int(t/dt)%print_step == 0: 
+            step += 1
+            if step%print_step == 0: 
                 self.logger.info("Time = %.2e/%.2e (%.01f%% complete)"%(t, tf, t/tf*100))
                 if animation:
                     rho, u, p, Y = self.get_solution_primvars()
@@ -526,10 +599,13 @@ class EulerEquation(object):
                     
                     #plt.legend(loc=1)
                     plt.show()
-                    name = str(int(t/dt)//100)
+                    name = str(step)
                     name = name.zfill(10)
                     #plt.savefig("figures/%s.png"%name)
                     plt.pause(.00000001)
+                    if file_io:
+                        np.savez("data_%s.npz"%name, rho=rho, u=u, p=p, Y=Y, x=self.xc, t=t, Q=self.Q)
+
             if t > tf:
                 self.logger.info("Time = %.2e/%.2e (%.01f%% complete)"%(t, tf, t/tf*100))
                 if animation:
@@ -541,7 +617,7 @@ if __name__ == "__main__":
     qright = np.array([0.125, 0.0, 0.1])
     eqn = EulerEquation(n=401, nscalar=0)
     eqn.initialize_sod(qleft, qright)
-    eqn.solve(tf=0.2, cfl=0.1, integrator="fe", flux="roe")
+    eqn.solve(tf=0.2, cfl=0.5, integrator="rk2", flux="hllc", print_step=1, order=2)
     rho, rhou, rhoE, rhoY = eqn.get_solution()
     rho, u, p, Y = eqn.get_solution_primvars()
 
