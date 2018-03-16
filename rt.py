@@ -134,8 +134,9 @@ class RT(EulerEquation):
         den_b = vh + vl
 
         self.b = rho*(num_b/den_b) - 1.0
-        self.b = np.maximum(self.b, 1e-4)
-
+        #print self.b
+        #self.b = np.minimum(self.b, 0.0)
+        #print self.b
         self.rhotau = -2.0/3.0*k*rho
 
         # not sure if the following expression is correct
@@ -173,6 +174,10 @@ class RT(EulerEquation):
         idx = self.get_scalar_index("k")
         # clip k to possitive value
         Y[:,idx-3] = np.clip(Y[:,idx-3], 0.0, 1e10)
+
+        idx = self.get_scalar_index("a_x")
+        # clip a_x to negative value
+        Y[:,idx-3] = np.clip(Y[:,idx-3], -1e10, 0.0)
         output.append(Y)
         return output
     
@@ -184,6 +189,7 @@ class RT(EulerEquation):
         u = U[:, 1]
         p = U[:, 2]
         Y = U[:, 3:]
+
         
         idx = self.get_scalar_index("k")
         k = U[:,idx] 
@@ -273,7 +279,7 @@ class RT(EulerEquation):
         
         rho[1:-1], u[1:-1], p[1:-1], Y[1:-1,:] = self.calc_press(Q)
             
-        if self.order == 10:
+        if self.order == 1:
             u[0] = -u[1]
             rho[0] = rho[1]
             p[0] = p[1]
@@ -283,8 +289,14 @@ class RT(EulerEquation):
             rho[0] = 2.0*rho[1] - rho[2]
             p[0] = 2.0*p[1] - p[2]
             Y[0,:] = 2.0*Y[1,:] - Y[2,:]
+            # idx = self.get_scalar_index("k")
+            # Y[0,idx-3] = 0.0
+            # idx = self.get_scalar_index("a_x")
+            # Y[0,idx-3] = 0.0
+            # idx = self.get_scalar_index("L")
+            # Y[0,idx-3] = 0.0
 
-        if self.order == 10:
+        if self.order == 1:
             u[-1] = -u[-2]
             rho[-1] = rho[-2]
             p[-1] = p[-2]
@@ -294,6 +306,12 @@ class RT(EulerEquation):
             rho[-1] = 2.0*rho[-2] - rho[-3]
             p[-1] = 2.0*p[-2] - p[-3]
             Y[-1,:] = 2.0*Y[-2,:] - Y[-3,:]
+            # idx = self.get_scalar_index("k")
+            # Y[-1,idx-3] = 0.0
+            # idx = self.get_scalar_index("a_x")
+            # Y[-1,idx-3] = 0.0
+            # idx = self.get_scalar_index("L")
+            # Y[-1,idx-3] = 0.0
 
         U = U.reshape((self.n+2)*self.nvar)
         self.calc_gradient_face()
@@ -305,7 +323,7 @@ if __name__ == "__main__":
     qright = np.array([0.125, 0.0, 0.1])
     eqn = RT(n=1001, nscalar=4)
     eqn.initialize()
-    eqn.solve(tf=2.0, cfl = 0.1, animation=True, print_step=100, integrator="rk2", flux="hllc", order=1, file_io=True)
+    eqn.solve(tf=2.0, cfl = 0.05, animation=True, print_step=100, integrator="rk4", flux="hllc", order=1, file_io=True)
     rho, rhou, rhoE, rhoY = eqn.get_solution()
     rho, u, p, Y = eqn.get_solution_primvars()
     #np.savez("data_5.npz", rho=rho, u=u, p=p, Y=Y, x=eqn.xc)
