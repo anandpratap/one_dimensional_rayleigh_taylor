@@ -9,15 +9,18 @@ try:
     import adolc as ad
 except:
     logger.warning("ADOLC not found. It is required for adjoint calculations.")
+
+from numba import jit, f8
 import numpy as np
 import numpy.linalg as la
 import matplotlib.pyplot as plt
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 import sod
+import fortutils as f
 from limiters import Limiters
 def safe_divide(x, y):
-    epsilon = 1e-10
+    epsilon = 1e-12
     #return x/(y+epsilon)
     if np.abs(x) > epsilon and np.abs(y) < epsilon:
         return x/epsilon
@@ -27,6 +30,7 @@ def safe_divide(x, y):
         return x/y
 
 vsafe_divide = np.vectorize(safe_divide)
+#vsafe_divide = safe_divide
 
 def same_address(x, y):
     return x.__array_interface__['data'] == y.__array_interface__['data']
@@ -39,7 +43,7 @@ def slope_limiter(r):
 vslope_limiter = np.vectorize(slope_limiter)
 
 class constants(object):
-    gamma = 1.4
+    gamma = 5.0/3.0
     gamma_m = gamma - 1.0
     c_mu = 0.204
     c_a = 0.339
@@ -53,7 +57,25 @@ class constants(object):
     n_y = 0.060
     c = 0.0
     R = 8.314
-    g = 9.8 * -100.0
+    g = 9.8 * -1e2
+
+#@jit(f8(f8[:],f8[:],f8[:]), nopython=True)
+def calc_gradient_face(x, U, Ux_face):
+    n = x.size - 1
+    nvar = U.size/(n+2)
+    dx = x[1] - x[0]
+    Ux_face = Ux_face.reshape((n+1, nvar))
+    U = U.reshape((n+2, nvar))
+    Ux_face[:,:] = (U[1:,:] - U[0:-1,:])/dx
+
+#@jit(nopython=True)
+def calc_gradient_center(x, U, Ux_center):
+    n = x.size - 1
+    nvar = U.size/(n+2)
+    dx = x[1] - x[0]
+    Ux_center = Ux_center.reshape([n, nvar])
+    U = U.reshape([n+2, nvar])
+    Ux_center[:,:] = (U[2:,:] - U[0:-2,:])/(2.0*dx)
     
 class EulerEquation(object):
     """Base class to solve the one dimensional Euler Equation.
@@ -67,7 +89,7 @@ class EulerEquation(object):
         self.scalar_map = {}
         for i in range(self.nscalar):
             self.scalar_map["Y_%i"%i] = i
-        self.x = np.linspace(-0.5, 0.5, self.n + 1)
+        self.x = np.linspace(-0.005, 0.005, self.n + 1)
         self.dx = self.x[1] - self.x[0]
         self.xc = 0.5*(self.x[0:-1] + self.x[1:])
         self.Q = np.zeros(self.n*self.nvar)
@@ -83,8 +105,8 @@ class EulerEquation(object):
         Ux_center = self.Ux_center.reshape([self.n, self.nvar])
         U = self.U.reshape([self.n+2, self.nvar])
         Ux_center[:,:] = (U[2:,:] - U[0:-2,:])/(2.0*self.dx)
-        Ux_center[0,:] = (U[2,:] - U[1,:])/self.dx
-        Ux_center[-1,:] = (U[-2,:] - U[-3,:])/self.dx
+        #Ux_center[0,:] = (U[2,:] - U[1,:])/self.dx
+        #Ux_center[-1,:] = (U[-2,:] - U[-3,:])/self.dx
     
     def calc_dt(self):
         rho, u, p, Y = self.get_solution_primvars()
@@ -283,7 +305,8 @@ class EulerEquation(object):
         lambda_1 =  np.abs(uavg - cavg);
         lambda_2 =  np.abs(uavg);
         lambda_3 =  np.abs(uavg + cavg);
-        
+        #print lambda_1.min(), lambda_2.max(), lambda_3.max()
+        #print (uavg/cavg).max()
         f1 = lambda_1*alpha_1 + lambda_2*alpha_2 + lambda_3*alpha_3;
         f2 = lambda_1*alpha_1*(uavg-cavg) + lambda_2*alpha_2*uavg + lambda_3*alpha_3*(uavg+cavg);
         f3 = lambda_1*alpha_1*(havg-cavg*uavg) + 0.5*lambda_2*alpha_2*uavg*uavg + lambda_3*alpha_3*(havg+cavg*uavg);
@@ -291,16 +314,30 @@ class EulerEquation(object):
         F[:,0] = 0.5*((rhol*ul + rhor*ur) - f1);
         F[:,1] = 0.5*((rhol*ul*ul + pl + rhor*ur*ur + pr) - f2);
         F[:,2] = 0.5*(ul*hl*rhol + ur*hr*rhor - f3);
+        
+        # uavg = 0.5*(ur+ul)
+        
+        # _Fl = rhol*ul
+        # _Fr = rhor*ur 
+        # F[:,0] = 0.5*(_Fl + _Fr) + 0.5*np.sign(uavg)*(_Fl - _Fr)
+
+        # _Fl = rhol*ul*ul
+        # _Fr = rhor*ur*ur
+        # F[:,1] = 0.5*(_Fl + _Fr) + 0.5*np.sign(uavg)*(_Fl - _Fr)
+        
+        # _Fl = rhol*ul*el/rhol
+        # _Fr = rhor*ur*er/rhor
+        # F[:,2] = 0.5*(_Fl + _Fr) + 0.5*np.sign(uavg)*(_Fl - _Fr)
+        
+
         for i in range(self.nscalar):
             F[:,self.get_scalar_index(i)] = 0.5*(rhol*ul*Yl[:,i] + rhor*ur*Yr[:,i]) + 0.5*np.sign(uavg)*(rhol*ul*Yl[:,i] - rhor*ur*Yr[:,i])
-        
         F = F.reshape((self.n+1)*self.nvar)
         Ul = Ul.reshape((self.n+1)*self.nvar)
         Ur = Ur.reshape((self.n+1)*self.nvar)
         assert(same_address(Ul, self.Ul))
         assert(same_address(Ur, self.Ur))
         assert(same_address(F, self.F))
-    @profile
     def calc_flux_hllc(self):
         F = self.F.reshape([self.n+1, self.nvar])
 
@@ -318,11 +355,10 @@ class EulerEquation(object):
         pr = Ur[:, 2]
         Yr = Ur[:, 3:]
         
-        
-        el = pl/(constants.gamma_m) + 0.5*rhol*ul*ul;
-        er = pr/(constants.gamma_m) + 0.5*rhor*ur*ur;
-        hl = (el + pl)/rhol;
-        hr = (er + pr)/rhor;
+        el = pl/(constants.gamma_m) + 0.5*rhol*ul*ul
+        er = pr/(constants.gamma_m) + 0.5*rhor*ur*ur
+        hl = (el + pl)/rhol
+        hr = (er + pr)/rhor
         al = np.sqrt(hl - 0.5*(constants.gamma - 1)*ul*ul)
         ar = np.sqrt(hr - 0.5*(constants.gamma - 1)*ur*ur)
 
@@ -433,6 +469,11 @@ class EulerEquation(object):
             self.calc_flux_roe()
         elif self.flux == "hllc":
             self.calc_flux_hllc()
+        elif self.flux == "hllcf":
+            F = self.F.reshape([self.n+1, self.nvar])
+            Ul = self.Ul.reshape([self.n+1, self.nvar])
+            Ur = self.Ur.reshape([self.n+1, self.nvar])
+            F[:,:] = f.calc_flux_hllc(Ul, Ur)
         else:
             raise ValueError("Flux not defined.")
 
@@ -445,8 +486,10 @@ class EulerEquation(object):
         R[:,:] = - (F[1:,:] - F[0:-1,:])/self.dx
         R[:,:] += (Fv[1:,:] - Fv[0:-1,:])/self.dx
         R[:,:] += S[:,:]
-        #print "invid", - (F[1:,1] - F[0:-1,1])/self.dx,
-        #print "source", S[:,1]
+        #diff = - (F[1:,1] - F[0:-1,1])/self.dx + S[:,1]
+        #for i in range(self.n):
+        #idx = diff.argmax()
+        #print diff.max(), self.xc[idx]
         F = F.reshape((self.n+1)*self.nvar)
         R = R.reshape(self.n*self.nvar)
         assert(same_address(F, self.F))
@@ -454,6 +497,7 @@ class EulerEquation(object):
         
 
     def record_tape(self):
+        #import numpy as np
         tag = 0
         Q = self.Q.copy()
         self.Q = ad.adouble(self.Q)
@@ -467,11 +511,34 @@ class EulerEquation(object):
         F = self.F.copy()
         self.F = ad.adouble(self.F)
 
+        Fv = self.Fv.copy()
+        self.Fv = ad.adouble(self.Fv)
+
+        S = self.S.copy()
+        self.S = ad.adouble(self.S)
+
+        mut = self.mut.copy()
+        self.mut = ad.adouble(self.mut)
+
+        b = self.b.copy()
+        self.b = ad.adouble(self.b)
+
+        rhotau = self.rhotau.copy()
+        self.rhotau = ad.adouble(self.rhotau)
+
+        ex = self.ex.copy()
+        self.ex = ad.adouble(self.ex)
+        
         Ul = self.Ul.copy()
         self.Ul = ad.adouble(self.Ul)
 
         Ur = self.Ur.copy()
         self.Ur = ad.adouble(self.Ur)
+        
+        Ux_face = self.Ux_face.copy()
+        self.Ux_face = ad.adouble(self.Ux_face)
+        Ux_center = self.Ux_center.copy()
+        self.Ux_center = ad.adouble(self.Ux_center)
 
         
         ad.trace_on(tag)
@@ -486,6 +553,15 @@ class EulerEquation(object):
         self.Ul = Ul
         self.Ur = Ur
         self.F = F
+        self.Fv = Fv
+        self.S = S
+        self.Ux_face = Ux_face
+        self.Ux_center = Ux_center
+        self.ex = ex
+        self.b = b
+        self.rhotau = rhotau
+        self.mut = mut
+        
     def calc_step(self):
         self.calc_residual()
 
@@ -496,6 +572,12 @@ class EulerEquation(object):
         self.R = np.zeros(self.n*self.nvar)
         self.S = np.zeros(self.n*self.nvar)
         self.U = np.zeros((self.n + 2)*self.nvar)
+
+        self.mut = np.zeros((self.n + 2))
+        self.rhotau = np.zeros((self.n + 2))
+        self.b = np.zeros((self.n + 2))
+        self.ex = np.zeros((self.n + 1))
+        
         self.Ux_face = np.zeros((self.n + 1)*self.nvar)
         self.Ux_center = np.zeros(self.n*self.nvar)
         self.F = np.zeros((self.n + 1)*self.nvar)
@@ -504,7 +586,7 @@ class EulerEquation(object):
         self.Ur = np.zeros((self.n+1)*self.nvar)
         self.flux = flux
         self.order = order
-        #self.record_tape()
+        #self.record_tape(/)
         t = 0.0
         step = 0
 
@@ -520,22 +602,28 @@ class EulerEquation(object):
             k4 = np.zeros_like(self.R)
             
         while 1:
-            #tag = 0
-            #options = np.array([0,0,0,0],dtype=int)
-            #self.record_tape()
-            #result = ad.colpack.sparse_jac_no_repeat(tag, self.Q, options)
-            #nnz = result[0]
-            #ridx = result[1]
-            #cidx = result[2]
-            #values = result[3]
-            #N = self.n*self.nvar
-
-            #print dt
-            #drdu = -sp.csr_matrix((values, (ridx, cidx)), shape=(N, N)) + sp.eye(N)/dt
-            #du = spla.spsolve(drdu, R)
-            #print np.linalg.norm(R - self.R)
-            #self.Q  = self.Q + du
-            if integrator == "fe":
+            
+            if integrator == "be":
+                tag = 0
+                options = np.array([0,0,0,0],dtype=int)
+                self.record_tape()
+                result = ad.colpack.sparse_jac_no_repeat(tag, self.Q, options)
+                nnz = result[0]
+                ridx = result[1]
+                cidx = result[2]
+                values = result[3]
+                N = self.n*self.nvar
+                self.calc_residual()
+                R = self.R.copy()
+                #print dt
+                #print values
+                drdu = -sp.csr_matrix((values, (ridx, cidx)), shape=(N, N)) + sp.eye(N)/dt
+                #print drdu
+                dQ = spla.spsolve(drdu, R)
+                #print np.linalg.norm(R - self.R)
+                self.Q  = self.Q + dQ
+                
+            elif integrator == "fe":
                 self.calc_step()
                 R = self.R.copy()
                 dt = self.calc_dt()*cfl
@@ -571,10 +659,9 @@ class EulerEquation(object):
                 self.Q  = Qn + k3*dt
                 self.calc_step()
                 k4[:] = self.R[:]
+                dQ = dt*(k1/6.0 + k2/3.0 + k3/3.0 + k4/6.0)
+                self.Q = Qn + dQ
 
-                self.Q = Qn + dt*(k1/6.0 + k2/3.0 + k3/3.0 + k4/6.0)
-
-                
             #print nnz
             #plt.spy(drdu)
             #plt.show()
@@ -582,23 +669,25 @@ class EulerEquation(object):
             step += 1
             if step%print_step == 0: 
                 self.logger.info("Time = %.2e/%.2e (%.01f%% complete)"%(t, tf, t/tf*100))
-                if animation:
+                self.logger.info("Time = %.2e"%(np.linalg.norm(dQ)))
+                if animation or file_io:
                     rho, u, p, Y = self.get_solution_primvars()
+                if animation:
                     plt.clf()
                     plt.subplot(2,4,1)
                     plt.title("Density")
                     plt.plot(self.xc, rho, 'r-', lw=1, label="Density")
-                    plt.xlim(-0.5, 0.5)
+                    plt.xlim(self.xc.min(), self.xc.max())
                     
                     plt.subplot(2,4,2)
                     plt.title("Velocity")
                     plt.plot(self.xc, u, 'r-', lw=1, label="Velocity")
-                    plt.xlim(-0.5, 0.5)
+                    plt.xlim(self.xc.min(), self.xc.max())
                     
                     plt.subplot(2,4,3)
                     plt.title("Pressure")
                     plt.plot(self.xc, p, 'r-', lw=1, label="Pressure")
-                    plt.xlim(-0.5, 0.5)
+                    plt.xlim(self.xc.min(), self.xc.max())
                     
                     if self.nscalar > 0:
                         for i in range(self.nscalar):
@@ -606,17 +695,17 @@ class EulerEquation(object):
                             label = self.scalar_map.keys()[self.scalar_map.values().index(i)]
                             plt.title(label)
                             plt.plot(self.xc, Y[:,i], '-', lw=1, label=self.scalar_map.keys()[self.scalar_map.values().index(i)])
-                            plt.xlim(-0.5, 0.5)
+                            plt.xlim(self.xc.min(), self.xc.max())
 
                     
                     #plt.legend(loc=1)
                     plt.show()
-                    name = str(step)
-                    name = name.zfill(10)
                     #plt.savefig("figures/%s.png"%name)
                     plt.pause(.00000001)
-                    if file_io:
-                        np.savez("data_%s.npz"%name, rho=rho, u=u, p=p, Y=Y, x=self.xc, t=t, Q=self.Q)
+                if file_io:
+                    name = str(step)
+                    name = name.zfill(10)
+                    np.savez("data_%s.npz"%name, rho=rho, u=u, p=p, Y=Y, x=self.xc, t=t, Q=self.Q)
 
             if t > tf:
                 self.logger.info("Time = %.2e/%.2e (%.01f%% complete)"%(t, tf, t/tf*100))
