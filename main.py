@@ -9,6 +9,13 @@ try:
     import adolc as ad
 except:
     logger.warning("ADOLC not found. It is required for adjoint calculations.")
+#from mpi4py import MPI as mpi
+
+class Mpi(object):
+    def __init__(self):
+        #self.comm = mpi.COMM_WORLD
+        #self.size = self.comm.Get_size()
+        self.rank = 0 #self.comm.Get_rank()
 
 from numba import jit, f8
 import numpy as np
@@ -82,6 +89,7 @@ class EulerEquation(object):
 
     """
     def __init__(self, n=11, nscalar=0):
+        self.mpi = Mpi()
         self.logger = logging.getLogger(__name__)
         self.n = n - 1
         self.nscalar = nscalar
@@ -89,7 +97,7 @@ class EulerEquation(object):
         self.scalar_map = {}
         for i in range(self.nscalar):
             self.scalar_map["Y_%i"%i] = i
-        self.x = np.linspace(-0.005, 0.005, self.n + 1)
+        self.x = np.linspace(-0.5, 0.5, self.n + 1)
         self.dx = self.x[1] - self.x[0]
         self.xc = 0.5*(self.x[0:-1] + self.x[1:])
         self.Q = np.zeros(self.n*self.nvar)
@@ -566,7 +574,7 @@ class EulerEquation(object):
         self.calc_residual()
 
     def solve(self, tf = 0.1, dt = 1e-4, animation = False, cfl=1.0, print_step=100, integrator="fe", flux="hllc", order=1, file_io=False):
-        if animation:
+        if animation and self.mpi.rank == 0:
             plt.ion()
             plt.figure(figsize=(10,10))
         self.R = np.zeros(self.n*self.nvar)
@@ -627,7 +635,8 @@ class EulerEquation(object):
                 self.calc_step()
                 R = self.R.copy()
                 dt = self.calc_dt()*cfl
-                self.Q  = self.Q + R*dt
+                dQ = R*dt
+                self.Q  = self.Q +dQ
             elif integrator == "rk2":
                 dt = self.calc_dt()*cfl
 
@@ -638,8 +647,8 @@ class EulerEquation(object):
                 self.Q  = Qn + k1*dt/2.0
                 self.calc_step()
                 k2[:] = self.R[:]
-
-                self.Q = Qn + k2*dt
+                dQ = k2*dt
+                self.Q = Qn + dQ
                 
             elif integrator == "rk4":
                 dt = self.calc_dt()*cfl
@@ -669,10 +678,10 @@ class EulerEquation(object):
             step += 1
             if step%print_step == 0: 
                 self.logger.info("Time = %.2e/%.2e (%.01f%% complete)"%(t, tf, t/tf*100))
-                self.logger.info("Time = %.2e"%(np.linalg.norm(dQ)))
+                #self.logger.info("Time = %.2e"%(np.linalg.norm(dQ)))
                 if animation or file_io:
                     rho, u, p, Y = self.get_solution_primvars()
-                if animation:
+                if animation and self.mpi.rank == 0:
                     plt.clf()
                     plt.subplot(2,4,1)
                     plt.title("Density")
@@ -718,8 +727,8 @@ if __name__ == "__main__":
     qright = np.array([0.125, 0.0, 0.1])
     eqn = EulerEquation(n=401, nscalar=0)
     eqn.initialize(qleft, qright)
-    tf = 0.05
-    eqn.solve(tf=tf, cfl=0.5, integrator="rk2", flux="hllc", print_step=1, order=2)
+    tf = 0.125
+    eqn.solve(tf=tf, cfl=0.5, integrator="rk2", flux="hllc", print_step=100, order=2, animation=False)
     rho, rhou, rhoE, rhoY = eqn.get_solution()
     rho, u, p, Y = eqn.get_solution_primvars()
 
@@ -732,7 +741,7 @@ if __name__ == "__main__":
 
     eqn = EulerEquation(n=401, nscalar=0)
     eqn.initialize(qleft, qright)
-    eqn.solve(tf=tf, cfl=0.5, integrator="rk2", flux="hllc")
+    eqn.solve(tf=tf, cfl=0.5, integrator="rk2", flux="hllc", print_step=100, order=1, animation=False)
     rho, rhou, rhoE, rhoY = eqn.get_solution()
     rho, u, p, Y = eqn.get_solution_primvars()
 
@@ -747,7 +756,7 @@ if __name__ == "__main__":
     # #plt.plot(eqn.xc, rhoE, 'x-', lw=1)
 
     positions, regions, values = sod.solve(left_state=(1, 1, 0), right_state=(0.1, 0.125, 0.),
-                                           geometry=(-0.5, 0.5, 0.0), t=tf, gamma=1.4, npts=101)
+                                           geometry=(-0.5, 0.5, 0.0), t=tf, gamma=constants.gamma, npts=101)
 
     plt.plot(values['x'], values['rho'], 'r-', lw=2, label="Density")
     plt.plot(values['x'], values['u'], 'g-', lw=2, label="Velocity")
