@@ -308,7 +308,7 @@ class RT(EulerEquation):
 if __name__ == "__main__":
     eqn = RT(n=101, nscalar=4)
     eqn.initialize()
-    eqn.solve(tf=1.5, cfl = 0.5, animation=True, print_step=1000, integrator="fe", flux="hllc", order=1, file_io=True, maxstep=10)
+    eqn.solve(tf=1.5, cfl = 0.5, animation=True, print_step=1000, integrator="fe", flux="hllc", order=1, file_io=True, maxstep=10, jacobian_mode="adolc")
     rho, rhou, rhoE, rhoY = eqn.get_solution()
     rho, u, p, Y = eqn.get_solution_primvars()
     #np.savez("data_5.npz", rho=rho, u=u, p=p, Y=Y, x=eqn.xc)
