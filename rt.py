@@ -214,15 +214,15 @@ class RT(EulerEquation):
         
         idx = self.get_scalar_index("L")
         dLdx_face = Ux_face[:,idx]
-        Fv[:,idx] = dLdx_face*mut_face/constants.n_l
+        Fv[:,idx] = dLdx_face*mut_face/constants.n_l * self.alpha[1]
         
         idx = self.get_scalar_index("a_x")
         da_xdx_face = Ux_face[:,idx]
-        Fv[:,idx] = da_xdx_face*mut_face/constants.n_a
+        Fv[:,idx] = da_xdx_face*mut_face/constants.n_a * self.alpha[2]
         
         idx = self.get_scalar_index("Y_h")
         dYhdx_face = Ux_face[:,idx]
-        Fv[:,idx] = dYhdx_face*mut_face/constants.n_y
+        Fv[:,idx] = dYhdx_face*mut_face/constants.n_y * self.alpha[3]
 
         
         rhotau_face = self.interpolate_on_face(self.rhotau)

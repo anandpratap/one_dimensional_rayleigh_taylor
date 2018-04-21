@@ -1,7 +1,7 @@
 from rt import *
 from calc_adjoint import Adjoint
 
-alpha = np.array([1.0])
+alpha = np.array([1.0, 1.0, 1.0, 1.0])
 for i in range(100):
     eqn = RT(n=101, nscalar=4)
     eqn.alpha = alpha
@@ -10,7 +10,7 @@ for i in range(100):
 
     adj = Adjoint(nstart=1, nend=10)
     grad = adj.solve()
-    alpha = alpha - (grad/abs(grad))*0.05
+    alpha = alpha - (grad/abs(grad).max())*0.05
     print 10*"#"
-    print "Alpha = ", alpha[0]
+    print "Alpha = ", alpha
     print 10*"#"

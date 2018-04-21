@@ -101,7 +101,7 @@ class EulerEquation(object):
         self.xc = 0.5*(self.x[0:-1] + self.x[1:])
         self.Q = np.zeros(self.n*self.nvar)
         self.limiter = Limiters("koren")
-        self.alpha = np.ones(1)
+        self.alpha = np.ones(4) #np.array([0.1, 0.2, 0.3, 0.4])
     @profile
     def calc_gradient_face(self):
         Ux_face = self.Ux_face.reshape([self.n+1, self.nvar])
@@ -773,7 +773,7 @@ class EulerEquation(object):
                 cidx = result[2]
                 values = result[3]
                 N = self.n*self.nvar
-                self.dRdalpha = sp.csr_matrix((values, (ridx, cidx)), shape=(N, 1))
+                self.dRdalpha = sp.csr_matrix((values, (ridx, cidx)), shape=(N, self.alpha.size))
                 self.complex_step(tag=tag)
                 print np.linalg.norm(np.nan_to_num(self.dRdalpha.toarray()))
                 print np.linalg.norm(self.dRdalpha_complex)
