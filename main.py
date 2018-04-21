@@ -1,42 +1,35 @@
-try:
-    profile
-except NameError:
-    profile = lambda x: x
 import logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 try:
     import adolc as ad
+    adolc_found = True
 except:
+    adolc_found = False
     logger.warning("ADOLC not found. It is required for adjoint calculations.")
-#from mpi4py import MPI as mpi
-
-class Mpi(object):
-    def __init__(self):
-        #self.comm = mpi.COMM_WORLD
-        #self.size = self.comm.Get_size()
-        self.rank = 0 #self.comm.Get_rank()
-
+    
 import numpy as np
 import numpy.linalg as la
 import matplotlib.pyplot as plt
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 import sod
-import fortutils as f
 from limiters import Limiters
-def safe_divide(x, y):
-    epsilon = 1e-12
-    return x/(y+epsilon)
-    # if np.abs(x) > epsilon and np.abs(y) < epsilon:
-    #     return x/epsilon
-    # elif np.abs(x) < epsilon and np.abs(y) < epsilon:
-    #     return 0.0
-    # else:
-    #     return x/y
+import os
+import tempfile
+def safe_divide(x, y, mode=0):
+    if mode == 0:
+        epsilon = 1e-12
+        return x/(y+epsilon)
+    else:
+        if np.abs(x) > epsilon and np.abs(y) < epsilon:
+            return x/epsilon
+        elif np.abs(x) < epsilon and np.abs(y) < epsilon:
+            return 0.0
+        else:
+            return x/y
 
 vsafe_divide = np.vectorize(safe_divide)
-#vsafe_divide = safe_divide
 
 def same_address(x, y):
     return x.__array_interface__['data'] == y.__array_interface__['data']
@@ -65,7 +58,6 @@ class constants(object):
     R = 8.314
     g = 9.8 * -1e2
 
-#@jit(f8(f8[:],f8[:],f8[:]), nopython=True)
 def calc_gradient_face(x, U, Ux_face):
     n = x.size - 1
     nvar = U.size/(n+2)
@@ -74,7 +66,6 @@ def calc_gradient_face(x, U, Ux_face):
     U = U.reshape((n+2, nvar))
     Ux_face[:,:] = (U[1:,:] - U[0:-1,:])/dx
 
-#@jit(nopython=True)
 def calc_gradient_center(x, U, Ux_center):
     n = x.size - 1
     nvar = U.size/(n+2)
@@ -88,7 +79,6 @@ class EulerEquation(object):
 
     """
     def __init__(self, n=11, nscalar=0):
-        self.mpi = Mpi()
         self.logger = logging.getLogger(__name__)
         self.n = n - 1
         self.nscalar = nscalar
@@ -101,14 +91,14 @@ class EulerEquation(object):
         self.xc = 0.5*(self.x[0:-1] + self.x[1:])
         self.Q = np.zeros(self.n*self.nvar)
         self.limiter = Limiters("koren")
-        self.alpha = np.ones(4) #np.array([0.1, 0.2, 0.3, 0.4])
-    @profile
+        self.alpha = np.ones(4)#np.array([0.9, 0.1, 0.01, 0.001])
+    
     def calc_gradient_face(self):
         Ux_face = self.Ux_face.reshape([self.n+1, self.nvar])
         U = self.U.reshape([self.n+2, self.nvar])
         Ux_face[:,:] = (U[1:,:] - U[0:-1,:])/self.dx
         
-    @profile
+    
     def calc_gradient_center(self):
         Ux_center = self.Ux_center.reshape([self.n, self.nvar])
         U = self.U.reshape([self.n+2, self.nvar])
@@ -133,7 +123,7 @@ class EulerEquation(object):
             return 3 + scalar
         elif type(scalar) == type(""):
             return 3 + self.scalar_map[scalar]
-    @profile
+    
     def calc_press(self, Q):
         output = []
         rho = Q[:, 0]
@@ -170,7 +160,7 @@ class EulerEquation(object):
         Q = self.Q.reshape([self.n, self.nvar])
         rho, u, p, Y = self.calc_press(Q)
         return rho, u, p, Y
-    @profile
+    
     def set_bc(self):
         U = self.U.reshape([self.n+2, self.nvar])
         Q = self.Q.reshape([self.n, self.nvar])
@@ -387,7 +377,7 @@ class EulerEquation(object):
         region_2 = np.logical_and(Sr >=0, S_star <= 0)
         region_3 = Sr < 0
     
-        @profile
+        
         def calc_ustar(rho, u, p, e, Y, S, Ss):
             fac = rho * (S - u)/(S - Ss)
             U_star_0 = 1.0 * fac
@@ -468,7 +458,7 @@ class EulerEquation(object):
         S[:,:] = 0.0
     def temporal_hook(self):
         pass
-    @profile
+    
     def calc_residual(self):
         self.set_bc()
         self.temporal_hook()
@@ -582,7 +572,7 @@ class EulerEquation(object):
         self.mut = mut
 
 
-    def complex_step(self, tag=0, stage=0):
+    def calc_jacobian_complex(self, tag=0):
         #import numpy as np
         
         Q = self.Q.copy()
@@ -632,38 +622,26 @@ class EulerEquation(object):
         if tag == 0:
             # calculate drdq
             nsize = self.n*(self.nscalar+3)
-            if stage == 0:
-                self.dRdQ_complex = np.zeros([nsize, nsize])
-            else:
-                self.dRdQ_complex_n = np.zeros([nsize, nsize])
+            dR = np.zeros([nsize, nsize])
                 
             dQ = 1e-14
             for i in range(nsize):
                 self.Q[i] = self.Q[i] + 1j*dQ
                 self.calc_residual()
                 self.Q[i] = self.Q[i] - 1j*dQ
-                if stage == 0:
-                    self.dRdQ_complex[:,i] = np.imag(self.R[:])/dQ
-                else:
-                    self.dRdQ_complex_n[:,i] = np.imag(self.R[:])/dQ
+                dR[:,i] = np.imag(self.R[:])/dQ
                                
         elif tag == 1:
             # calculate drdalpha
             nsize = self.n*(self.nscalar+3)
             nalpha = self.alpha.size
-            if stage == 0:
-                self.dRdalpha_complex = np.zeros([nsize, nalpha])
-            else:
-                self.dRdalpha_complex_n = np.zeros([nsize, nalpha])
+            dR = np.zeros([nsize, nalpha])
             dalpha = 1e-14
             for i in range(nalpha):
                 self.alpha[i] = self.alpha[i] + 1j*dalpha
                 self.calc_residual()
                 self.alpha[i] = self.alpha[i] - 1j*dalpha
-                if stage == 0:
-                    self.dRdalpha_complex[:,i] = np.imag(self.R[:])/dalpha
-                else:
-                    self.dRdalpha_complex_n[:,i] = np.imag(self.R[:])/dalpha
+                dR[:,i] = np.imag(self.R[:])/dalpha
 
         self.Q = Q
         self.alpha = alpha
@@ -680,16 +658,44 @@ class EulerEquation(object):
         self.b = b
         self.rhotau = rhotau
         self.mut = mut
+        return dR
 
-        
+
+    def calc_jacobian_ad(self, tag):
+        options = np.array([0,0,0,0],dtype=int)
+        self.record_tape(tag=tag)
+        if tag == 0:
+            result = ad.colpack.sparse_jac_no_repeat(tag, self.Q, options)
+        else:
+            result = ad.colpack.sparse_jac_no_repeat(tag, self.alpha, options)
+        nnz = result[0]
+        ridx = result[1]
+        cidx = result[2]
+        values = result[3]
+        N = self.n*self.nvar
+        if tag == 0:
+            return sp.csr_matrix((values, (ridx, cidx)), shape=(N, N)).toarray()
+        elif tag == 1:
+            return sp.csr_matrix((values, (ridx, cidx)), shape=(N, self.alpha.size)).toarray()
+
+    
     def calc_step(self):
         self.calc_residual()
 
     def temporal_hook_post(self):
         pass
         
-    def solve(self, tf = 0.1, dt = 1e-4, animation = False, cfl=1.0, print_step=100, integrator="fe", flux="hllc", order=1, file_io=False, maxstep=1e10):
-        if animation and self.mpi.rank == 0:
+    def solve(self, tf = 0.1, dt = 1e-4, animation = False, cfl=1.0, print_step=100, integrator="fe", flux="hllc", order=1, file_io=False, maxstep=1e10, jacobian_mode=None, tmp_dir=False):
+        if tmp_dir:
+            cwd = os.getcwd()
+            run_dir = tempfile.mkdtemp(prefix="solver_")
+            os.chdir(run_dir)
+            
+        if jacobian_mode == "adolc" and not adolc_found:
+            jacobian_mode = "complex"
+            logger.warning("Disabling jacobian calculation using AD and switching to complex as ADOLC is not found.")
+        
+        if animation:
             plt.ion()
             plt.figure(figsize=(10,10))
         self.R = np.zeros(self.n*self.nvar)
@@ -748,42 +754,36 @@ class EulerEquation(object):
                 self.Q  = self.Q + dQ
                 
             elif integrator == "fe":
+                
                 self.calc_step()
                 R = self.R.copy()
                 dt = 1e-5 #self.calc_dt()*cfl
                 dQ = R*dt
-                options = np.array([0,0,0,0],dtype=int)
                 tag = 0
-                self.record_tape(tag=tag)
-                result = ad.colpack.sparse_jac_no_repeat(tag, self.Q, options)
-                nnz = result[0]
-                ridx = result[1]
-                cidx = result[2]
-                values = result[3]
-                N = self.n*self.nvar
-                self.dRdQ = sp.csr_matrix((values, (ridx, cidx)), shape=(N, N))
-                self.complex_step(tag=tag)
-                print np.linalg.norm(np.nan_to_num(self.dRdQ.toarray()))
-                print np.linalg.norm(self.dRdQ_complex)
+                if jacobian_mode == "adolc":
+                    self.dRdQ_nm = self.calc_jacobian_ad(tag=tag)
+                elif jacobian_mode == "complex":
+                    self.dRdQ_nm = self.calc_jacobian_complex(tag=tag)
+                    
                 tag = 1
-                self.record_tape(tag=tag)
-                result = ad.colpack.sparse_jac_no_repeat(tag, self.Q, options)
-                nnz = result[0]
-                ridx = result[1]
-                cidx = result[2]
-                values = result[3]
-                N = self.n*self.nvar
-                self.dRdalpha = sp.csr_matrix((values, (ridx, cidx)), shape=(N, self.alpha.size))
-                self.complex_step(tag=tag)
-                print np.linalg.norm(np.nan_to_num(self.dRdalpha.toarray()))
-                print np.linalg.norm(self.dRdalpha_complex)
-                
+                if jacobian_mode == "adolc":
+                    self.dRdalpha_nm = self.calc_jacobian_ad(tag=tag)
+                elif jacobian_mode == "complex":
+                    self.dRdalpha_nm = self.calc_jacobian_complex(tag=tag)
+
                 self.Q  = self.Q + dQ
 
-                self.complex_step(tag=0, stage=1)
-                self.complex_step(tag=1, stage=1)
+                if jacobian_mode == "adolc":
+                    self.dRdQ_n = self.calc_jacobian_ad(tag=tag)
+                elif jacobian_mode == "complex":
+                    self.dRdQ_n = self.calc_jacobian_complex(tag=tag)
+                    
+                tag = 1
+                if jacobian_mode == "adolc":
+                    self.dRdalpha_n = self.calc_jacobian_ad(tag=tag)
+                elif jacobian_mode == "complex":
+                    self.dRdalpha_n = self.calc_jacobian_complex(tag=tag)
 
-                
             elif integrator == "rk2":
                 dt = self.calc_dt()*cfl
 
@@ -828,7 +828,7 @@ class EulerEquation(object):
                 #self.logger.info("Time = %.2e"%(np.linalg.norm(dQ)))
                 if animation or file_io:
                     rho, u, p, Y = self.get_solution_primvars()
-                if animation and self.mpi.rank == 0:
+                if animation:
                     plt.clf()
                     plt.subplot(2,4,1)
                     plt.title("Density")
@@ -861,8 +861,10 @@ class EulerEquation(object):
                 if file_io:
                     name = str(step)
                     name = name.zfill(10)
-                    np.savez("data_%s.npz"%name, rho=rho, u=u, p=p, Y=Y, x=self.xc, t=t, Q=self.Q)
-                    np.savez("data_%s.npz"%name, rho=rho, u=u, p=p, Y=Y, x=self.xc, t=t, Q=self.Q, dRdQ=self.dRdQ, dRdalpha=self.dRdalpha, dRdQ_complex=self.dRdQ_complex, dt=dt, dRdalpha_complex=self.dRdalpha_complex, dRdalpha_complex_n = self.dRdalpha_complex_n, dRdQ_complex_n = self.dRdQ_complex_n)
+                    if jacobian_mode == None:
+                        np.savez("data_%s.npz"%name, rho=rho, u=u, p=p, Y=Y, x=self.xc, t=t, Q=self.Q)
+                    else:
+                        np.savez("data_%s.npz"%name, rho=rho, u=u, p=p, Y=Y, x=self.xc, t=t, Q=self.Q, dRdQ_nm=self.dRdQ_nm, dRdalpha_nm=self.dRdalpha_nm, dRdQ_n=self.dRdQ_n, dRdalpha_n=self.dRdalpha_n)
 
             
             if t > tf or step > maxstep:
@@ -870,7 +872,9 @@ class EulerEquation(object):
                 if animation:
                     plt.ioff()
                 break
-            
+        if tmp_dir:
+            os.chdir(cwd)
+            return run_dir
 if __name__ == "__main__":
     qleft = np.array([1.0, 0.0, 1.0])
     qright = np.array([0.125, 0.0, 0.1])
