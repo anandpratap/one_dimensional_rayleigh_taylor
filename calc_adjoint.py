@@ -3,7 +3,7 @@ import numpy.linalg as la
 import matplotlib.pyplot as plt
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
-
+import os
 from pylab import *
 class Adjoint(object):
     def __init__(self, nstart=0, nend=0):
@@ -48,7 +48,7 @@ class Adjoint(object):
         filename = str(step).zfill(10)
         filename = "data_%s.npz"%(filename)
         data = np.load(filename)
-        data_inverse = np.load('data_for_inverse/'+filename)
+        data_inverse = np.load(os.path.join(self.cwd, 'inverse_data', filename))
         J = self.objective_function(data['Q'], data_inverse['Q'])
         dJdQ = self.calc_dJdQ(data['Q'], data_inverse['Q'])
         rho = data['rho']
@@ -56,9 +56,9 @@ class Adjoint(object):
         Q = data['Q']
         k = data['Y'][:,0]
         k_inverse = data_inverse['Y'][:,0]
-        dRdQ = data['dRdQ_complex']
+        dRdQ = data['dRdQ_nm']
         dRdQ = np.nan_to_num(dRdQ)
-        dRdalpha = -data['dRdalpha_complex_n']
+        dRdalpha = -data['dRdalpha_n']
         n = dRdQ.shape[0]
         assert n == rho.size*7
         Ibydt = np.diag(np.ones_like(Q)/dt)
@@ -70,7 +70,10 @@ class Adjoint(object):
         dRdQp = Ibydt
         return dJdQ, dRdQ, dRdQp, dRdalpha, J#((k-k_inverse)**2).sum()
         
-    def solve(self):
+    def solve(self, run_dir=None):
+        if run_dir is not None:
+            self.cwd = os.getcwd()
+            os.chdir(run_dir)
         #plt.figure()
         J_sum = 0.0
         grad_ = []
@@ -91,7 +94,7 @@ class Adjoint(object):
                 tmp = np.dot(psi.T, dRdalpha)
                 grad += np.dot(psi.T, dRdalpha)
                 r = np.dot(dRdQ_n.transpose(), psi) + rhs
-                assert np.linalg.norm(r) < 1e-10
+                #assert np.linalg.norm(r) < 1e-10
             J_sum += Jn
             #plt.plot(psi[3::7], label='%i'%i)
         for i in range(4):
@@ -99,7 +102,9 @@ class Adjoint(object):
         #plt.legend()
         print "objective = %.16f"%J_sum
         #plt.show()
-        return grad
+        if run_dir is not None:
+            os.chdir(self.cwd)
+        return J_sum, grad
             
 if __name__ == "__main__":
     adj = Adjoint(nstart=1, nend=10)
