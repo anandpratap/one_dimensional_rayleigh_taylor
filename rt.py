@@ -1,4 +1,4 @@
-from main import constants, EulerEquation, same_address, calc_gradient_face, calc_gradient_center
+from main import constants, EulerEquation, same_address, calc_gradient_face, calc_gradient_center, safe_divide, vsafe_divide
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -11,7 +11,7 @@ def calc_partial_volume(Yh, Yl, rho, At):
 
 def calc_partial_rho(At):
     rho_h = 1.0
-    rho_l = (1.0 - At)/(1.0 + At)
+    rho_l = (1.0 - At)/(1.0 + At) * rho_h
     return rho_h, rho_l
 
 
@@ -26,11 +26,10 @@ def smooth(x, left, right):
 
 class RT(EulerEquation):
     def initialize(self, qleft=None, qright=None):
-        # self.xc = 0.01*self.xc
-        self.scalar_map = {"k":0, "L": 1, "a_x": 2, "Y_h": 3}
+        self.scalar_map = {"k":0, "L": 1, "Y_h": 2}
         Q = self.Q.reshape([self.n, self.nvar])
 
-        self.At = 0.0
+        self.At = 0.05
         rho_h, rho_l = calc_partial_rho(self.At)
         
         
@@ -55,12 +54,11 @@ class RT(EulerEquation):
         #Yh = smooth(self.xc, 0.0, 1.0)
         Yl = 1.0 - Yh
                
-        rho = rho_l*Yl + rho_h *Yh
+        rho = rho_l * Yl + rho_h * Yh
         #rho[first_half] = rho_l
         #rho[second_half] = rho_h
         L_init = 4e-8
-        k_init = 1e-1
-        a_init = -1e-4
+        k_init = 1e-6
         T_ref = 293.0
         P_ref = 101325.0
         R = constants.R
@@ -75,7 +73,8 @@ class RT(EulerEquation):
 
         T_l =  get_T(mw_l)
         T_h =  get_T(mw_h)
-
+        #print T_l
+        #print T_h
         cv_l = get_cv(mw_l)
         cv_h = get_cv(mw_h)
 
@@ -93,10 +92,6 @@ class RT(EulerEquation):
         idx = self.get_scalar_index("L")
         Q[:, idx] = 0.0
         Q[self.n/2-nc:self.n/2+nc, idx] = L_init * rho[self.n/2-nc:self.n/2+nc]
-
-        idx = self.get_scalar_index("a_x")
-        Q[:, idx] = 0.0
-        Q[self.n/2-nc:self.n/2+nc, idx] = a_init * rho[self.n/2-nc:self.n/2+nc]
 
         idx = self.get_scalar_index("Y_h")
         Q[:, idx] =  Yh * rho
@@ -125,10 +120,18 @@ class RT(EulerEquation):
         rho = U[:, 0]
         u = U[:, 1]
         p = U[:, 2]
+        
+        #print p
         Y = U[:, 3:]
-
-        self.mut[:] = 1e-1
-       
+        idx = self.get_scalar_index("k")
+        k = U[:,idx]
+        idx = self.get_scalar_index("L")
+        L = U[:,idx]
+        
+        self.mut[:] = constants.alpha_t * rho * L * np.sqrt(k)
+        self.mut[0] = self.mut[-1] = 0.0
+        self.rhotau[:] = -2.0/3.0 * rho * k 
+        
         e = np.zeros_like(rho) 
 
         e[1:-1] = (Q[:,2] - 0.5*rho[1:-1]*u[1:-1]**2)/rho[1:-1]
@@ -168,11 +171,6 @@ class RT(EulerEquation):
         #Y[:,idx-3] = 1e-4 #*(1 - (self.xc/0.05)**2)
         Y[:,idx-3] = np.clip(Y[:,idx-3], 0.0, 1e10)
         #print 'calc press ', Y[:,idx-3]
-        idx = self.get_scalar_index("a_x")
-        # clip a_x to negative value
-        #Y[:,idx-3] = -1e-6 #*(1 - (self.xc/0.05)**2)
-        Y[:,idx-3] = np.clip(Y[:,idx-3], -1e10, 0.0)
-
         idx = self.get_scalar_index("L")
         #Y[:,idx-3] = 1e-6 #*(1 - (self.xc/0.05)**2)
         Y[:,idx-3] = np.clip(Y[:,idx-3], 0.0, 1e10)
@@ -185,15 +183,28 @@ class RT(EulerEquation):
         S = self.S.reshape([self.n, self.nvar])
         U = self.U.reshape([self.n+2, self.nvar])
         Ux_center = self.Ux_center.reshape([self.n, self.nvar])
+        drhodx = Ux_center[:,0]
+        dudx = Ux_center[:,1]
+        dpdx = Ux_center[:,2]
         rho = U[:, 0]
         u = U[:, 1]
         p = U[:, 2]
         Y = U[:, 3:]
+        idx = self.get_scalar_index("k")
+        k = U[:,idx]
+        idx = self.get_scalar_index("L")
+        L = U[:,idx]
+        
         S[:,:] = 0.0
         slice_cells = slice(1,-1)
         S[:,1] = rho[slice_cells]*constants.g
         S[:,2] = rho[slice_cells]*u[slice_cells]*constants.g
-                
+        S[:,2] = S[:,2] + constants.d_t*rho[slice_cells]*k[slice_cells]**1.5 * safe_divide(1.0, L[slice_cells]) + constants.b_t*self.mut[slice_cells]/rho[slice_cells]**2 * drhodx*dpdx
+        idx = self.get_scalar_index("k")
+        S[:,idx] = -constants.b_t * self.mut[slice_cells]/rho[slice_cells]**2 * drhodx * dpdx + self.rhotau[slice_cells]*dudx - constants.d_t*rho[slice_cells]*k[slice_cells]**1.5*safe_divide(1.0, L[slice_cells])
+        idx = self.get_scalar_index("L")
+        S[:,idx] = constants.c_c*rho[slice_cells]*L[slice_cells]*dudx + constants.c_l*rho[slice_cells]*np.sqrt(2.0*k[slice_cells])
+
         
     def interpolate_on_face(self, u, ghost=True):
         if ghost:
@@ -216,21 +227,18 @@ class RT(EulerEquation):
         dLdx_face = Ux_face[:,idx]
         Fv[:,idx] = dLdx_face*mut_face/constants.n_l * self.alpha[1]
         
-        idx = self.get_scalar_index("a_x")
-        da_xdx_face = Ux_face[:,idx]
-        Fv[:,idx] = da_xdx_face*mut_face/constants.n_a * self.alpha[2]
-        
         idx = self.get_scalar_index("Y_h")
         dYhdx_face = Ux_face[:,idx]
         Fv[:,idx] = dYhdx_face*mut_face/constants.n_y * self.alpha[3]
 
-        
         rhotau_face = self.interpolate_on_face(self.rhotau)
         Fv[:,1] = mut_face*Ux_face[:,1]
         Fv[:,2] = self.ex*mut_face/constants.n_e
-
+        
+        
     def calc_dt(self):
         rho, u, p, Y = self.get_solution_primvars()
+        #print p
         a = np.sqrt(constants.gamma*p/rho)
         lambda_max = np.max(a + np.abs(u))
         #print lambda_max
@@ -250,10 +258,6 @@ class RT(EulerEquation):
         Q[-1,1] = 0.0
 
         idx = self.get_scalar_index("k")
-        Q[0,idx] = 0.0
-        Q[-1,idx] = 0.0
-
-        idx = self.get_scalar_index("a_x")
         Q[0,idx] = 0.0
         Q[-1,idx] = 0.0
 
@@ -306,9 +310,9 @@ class RT(EulerEquation):
         assert(same_address(U, self.U))
 
 if __name__ == "__main__":
-    eqn = RT(n=101, nscalar=4)
+    eqn = RT(n=401, nscalar=3)
     eqn.initialize()
-    eqn.solve(tf=1.5, cfl = 0.5, animation=True, print_step=1000, integrator="fe", flux="hllc", order=1, file_io=True, maxstep=10, jacobian_mode="adolc")
+    eqn.solve(tf=0.1*20, cfl = 0.5, animation=True, print_step=1000, integrator="rk2", flux="hllc", order=1, file_io=True, maxstep=1000000, jacobian_mode=None)
     rho, rhou, rhoE, rhoY = eqn.get_solution()
     rho, u, p, Y = eqn.get_solution_primvars()
     #np.savez("data_5.npz", rho=rho, u=u, p=p, Y=Y, x=eqn.xc)

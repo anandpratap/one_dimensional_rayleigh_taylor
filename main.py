@@ -44,17 +44,16 @@ vslope_limiter = np.vectorize(slope_limiter)
 class constants(object):
     gamma = 5.0/3.0
     gamma_m = gamma - 1.0
-    c_mu = 0.204
-    c_a = 0.339
-    c_b = 0.857
-    c_d = 0.354
-    c_l = 0.283
-    n_a = 0.060
-    n_e = 0.060
-    n_k = 0.060
-    n_l = 0.030
-    n_y = 0.060
-    c = 0.0
+    alpha_b = 0.060
+    alpha_t = 1.414
+    b_t = 1.20
+    d_t = 3.50
+    c_c = 1.0
+    c_l = 1.0
+    n_y = 1.0
+    n_e = 1.0
+    n_k = 1.0
+    n_l = 0.5
     R = 8.314
     g = 9.8 * -1e2
 
@@ -786,7 +785,6 @@ class EulerEquation(object):
 
             elif integrator == "rk2":
                 dt = self.calc_dt()*cfl
-
                 self.calc_step()
                 k1[:] = self.R[:]
                 Qn[:] = self.Q[:]
@@ -823,7 +821,7 @@ class EulerEquation(object):
             #plt.show()
             t += dt
             step += 1
-            if step%print_step == 0 or 1: 
+            if step%print_step == 0 or jacobian_mode is not None: 
                 self.logger.info("Time = %.2e/%.2e (%.01f%% complete)"%(t, tf, t/tf*100))
                 #self.logger.info("Time = %.2e"%(np.linalg.norm(dQ)))
                 if animation or file_io:
