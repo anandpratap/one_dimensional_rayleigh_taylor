@@ -19,7 +19,7 @@ import os
 import tempfile
 def safe_divide(x, y, mode=0):
     if mode == 0:
-        epsilon = 1e-12
+        epsilon = 1e-14
         return x/(y+epsilon)
     else:
         if np.abs(x) > epsilon and np.abs(y) < epsilon:
@@ -44,16 +44,15 @@ vslope_limiter = np.vectorize(slope_limiter)
 class constants(object):
     gamma = 5.0/3.0
     gamma_m = gamma - 1.0
-    alpha_b = 0.060
-    alpha_t = 1.414
-    b_t = 1.20
-    d_t = 3.50
+    c_mu = 0.20364675
+    b_t = 8.4
+    c_d = 0.35355339
     c_c = 1.0
-    c_l = 1.0
-    n_y = 1.0
-    n_e = 1.0
-    n_k = 1.0
-    n_l = 0.5
+    c_l = 0.28284271
+    n_y = 0.060000
+    n_e = 0.060000
+    n_k = 0.060000
+    n_l = 0.030000
     R = 8.314
     g = 9.8 * -1e2
 
@@ -85,7 +84,7 @@ class EulerEquation(object):
         self.scalar_map = {}
         for i in range(self.nscalar):
             self.scalar_map["Y_%i"%i] = i
-        self.x = np.linspace(-0.5, 0.5, self.n + 1)
+        self.x = np.linspace(-0.5, 0.5, self.n + 1)*0.01
         self.dx = self.x[1] - self.x[0]
         self.xc = 0.5*(self.x[0:-1] + self.x[1:])
         self.Q = np.zeros(self.n*self.nvar)

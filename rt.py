@@ -58,7 +58,7 @@ class RT(EulerEquation):
         #rho[first_half] = rho_l
         #rho[second_half] = rho_h
         L_init = 4e-8
-        k_init = 1e-6
+        k_init = 1.6e-15
         T_ref = 293.0
         P_ref = 101325.0
         R = constants.R
@@ -84,7 +84,7 @@ class RT(EulerEquation):
         e = Yh * e_h + Yl * e_l
         
         Q[:, 0], Q[:, 1], Q[:, 2] = self.calc_Ee(rho, 0.0, e);
-        nc = 4
+        nc = 2
         idx = self.get_scalar_index("k")
         Q[:, idx] = 0.0
         Q[self.n/2-nc:self.n/2+nc, idx] = k_init * rho[self.n/2-nc:self.n/2+nc]
@@ -128,7 +128,7 @@ class RT(EulerEquation):
         idx = self.get_scalar_index("L")
         L = U[:,idx]
         
-        self.mut[:] = constants.alpha_t * rho * L * np.sqrt(k)
+        self.mut[:] = constants.c_mu * rho * L * np.sqrt(k)
         self.mut[0] = self.mut[-1] = 0.0
         self.rhotau[:] = -2.0/3.0 * rho * k 
         
@@ -139,6 +139,9 @@ class RT(EulerEquation):
         e[-1] = e[-2]
         self.ex[:] = (e[1:] - e[0:-1])/self.dx
 
+        self.rhotaux = (self.rhotau[2:] - self.rhotau[0:-2])/self.dx/2.0
+
+        
     def calc_press(self, Q):
         output = []
         rho = Q[:, 0]
@@ -197,11 +200,14 @@ class RT(EulerEquation):
         
         S[:,:] = 0.0
         slice_cells = slice(1,-1)
-        S[:,1] = rho[slice_cells]*constants.g
+        S[:,1] = rho[slice_cells]*constants.g + self.rhotaux
         S[:,2] = rho[slice_cells]*u[slice_cells]*constants.g
-        S[:,2] = S[:,2] + constants.d_t*rho[slice_cells]*k[slice_cells]**1.5 * safe_divide(1.0, L[slice_cells]) + constants.b_t*self.mut[slice_cells]/rho[slice_cells]**2 * drhodx*dpdx
+
+        term = constants.c_d*rho[slice_cells]*k[slice_cells]**1.5 * safe_divide(1.0, L[slice_cells]) + constants.b_t*self.mut[slice_cells]/rho[slice_cells]**2 * drhodx*dpdx
+        
+        S[:,2] = S[:,2] + term
         idx = self.get_scalar_index("k")
-        S[:,idx] = -constants.b_t * self.mut[slice_cells]/rho[slice_cells]**2 * drhodx * dpdx + self.rhotau[slice_cells]*dudx - constants.d_t*rho[slice_cells]*k[slice_cells]**1.5*safe_divide(1.0, L[slice_cells])
+        S[:,idx] = self.rhotau[slice_cells]*dudx - term
         idx = self.get_scalar_index("L")
         S[:,idx] = constants.c_c*rho[slice_cells]*L[slice_cells]*dudx + constants.c_l*rho[slice_cells]*np.sqrt(2.0*k[slice_cells])
 
@@ -232,7 +238,7 @@ class RT(EulerEquation):
         Fv[:,idx] = dYhdx_face*mut_face/constants.n_y * self.alpha[3]
 
         rhotau_face = self.interpolate_on_face(self.rhotau)
-        Fv[:,1] = mut_face*Ux_face[:,1]
+        #Fv[:,1] = mut_face*Ux_face[:,1]
         Fv[:,2] = self.ex*mut_face/constants.n_e
         
         
@@ -312,7 +318,7 @@ class RT(EulerEquation):
 if __name__ == "__main__":
     eqn = RT(n=401, nscalar=3)
     eqn.initialize()
-    eqn.solve(tf=0.1*20, cfl = 0.5, animation=True, print_step=1000, integrator="rk2", flux="hllc", order=1, file_io=True, maxstep=1000000, jacobian_mode=None)
+    eqn.solve(tf=1.6, cfl = 0.5, animation=True, print_step=1000, integrator="rk2", flux="hllc", order=1, file_io=True, maxstep=1000000000000, jacobian_mode=None)
     rho, rhou, rhoE, rhoY = eqn.get_solution()
     rho, u, p, Y = eqn.get_solution_primvars()
     #np.savez("data_5.npz", rho=rho, u=u, p=p, Y=Y, x=eqn.xc)
