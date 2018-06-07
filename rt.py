@@ -26,7 +26,7 @@ def smooth(x, left, right):
 
 class RT(EulerEquation):
     def initialize(self, qleft=None, qright=None):
-        self.scalar_map = {"k":0, "L": 1, "Y_h": 2}
+        self.scalar_map = {"k":0, "L": 1, "Y_h": 2, "V_h": 3}
         Q = self.Q.reshape([self.n, self.nvar])
 
         self.At = 0.05
@@ -95,6 +95,9 @@ class RT(EulerEquation):
 
         idx = self.get_scalar_index("Y_h")
         Q[:, idx] =  Yh * rho
+        
+        idx = self.get_scalar_index("V_h")
+        Q[:, idx] = 0.0
         
         Q = Q.reshape(self.n*self.nvar)
         # check if any copy happened
@@ -189,6 +192,7 @@ class RT(EulerEquation):
         drhodx = Ux_center[:,0]
         dudx = Ux_center[:,1]
         dpdx = Ux_center[:,2]
+        dYhdx = Ux_center[:,-2]
         rho = U[:, 0]
         u = U[:, 1]
         p = U[:, 2]
@@ -197,6 +201,9 @@ class RT(EulerEquation):
         k = U[:,idx]
         idx = self.get_scalar_index("L")
         L = U[:,idx]
+
+        idx = self.get_scalar_index("V_h")
+        Vh = U[:,idx]
         
         S[:,:] = 0.0
         slice_cells = slice(1,-1)
@@ -210,6 +217,9 @@ class RT(EulerEquation):
         S[:,idx] = self.rhotau[slice_cells]*dudx - term
         idx = self.get_scalar_index("L")
         S[:,idx] = constants.c_c*rho[slice_cells]*L[slice_cells]*dudx + constants.c_l*rho[slice_cells]*np.sqrt(2.0*k[slice_cells])
+
+        idx = self.get_scalar_index("V_h")
+        S[:,idx] = constants.c_v1*self.mut[slice_cells]*dYhdx*dYhdx - constants.c_v2*rho[slice_cells]*np.sqrt(2.0*k[slice_cells]) * safe_divide(1.0, L[slice_cells])*Vh[slice_cells]
 
         
     def interpolate_on_face(self, u, ghost=True):
@@ -237,6 +247,11 @@ class RT(EulerEquation):
         dYhdx_face = Ux_face[:,idx]
         Fv[:,idx] = dYhdx_face*mut_face/constants.n_y * self.alpha[3]
 
+        idx = self.get_scalar_index("V_h")
+        dVhdx_face = Ux_face[:,idx]
+        Fv[:,idx] = dVhdx_face*mut_face/constants.n_v 
+
+        
         rhotau_face = self.interpolate_on_face(self.rhotau)
         #Fv[:,1] = mut_face*Ux_face[:,1]
         Fv[:,2] = self.ex*mut_face/constants.n_e
@@ -316,9 +331,9 @@ class RT(EulerEquation):
         assert(same_address(U, self.U))
 
 if __name__ == "__main__":
-    eqn = RT(n=401, nscalar=3)
+    eqn = RT(n=401, nscalar=4)
     eqn.initialize()
-    eqn.solve(tf=1.6, cfl = 0.5, animation=True, print_step=1000, integrator="rk2", flux="hllc", order=1, file_io=True, maxstep=1000000000000, jacobian_mode=None)
+    eqn.solve(tf=1.6, cfl = 0.5, animation=True, print_step=10000, integrator="rk2", flux="hllc", order=1, file_io=True, maxstep=1000000000000, jacobian_mode=None)
     rho, rhou, rhoE, rhoY = eqn.get_solution()
     rho, u, p, Y = eqn.get_solution_primvars()
     #np.savez("data_5.npz", rho=rho, u=u, p=p, Y=Y, x=eqn.xc)

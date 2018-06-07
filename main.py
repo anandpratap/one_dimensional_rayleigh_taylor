@@ -56,6 +56,11 @@ class constants(object):
     R = 8.314
     g = 9.8 * -1e2
 
+    n_v = 0.06
+    c_v1 = 46.67
+    c_v2 = 0.849
+    
+    
 def calc_gradient_face(x, U, Ux_face):
     n = x.size - 1
     nvar = U.size/(n+2)
