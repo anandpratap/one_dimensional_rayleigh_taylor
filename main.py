@@ -14,9 +14,9 @@ import matplotlib.pyplot as plt
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 import sod
-from limiters import Limiters
 import os
 import tempfile
+
 def safe_divide(x, y, mode=0):
     if mode == 0:
         epsilon = 1e-14
@@ -39,26 +39,12 @@ def slope_limiter(r):
         return 2.0*r/(1.0 + r)
     else:
         return 0
+
 vslope_limiter = np.vectorize(slope_limiter)
 
 class constants(object):
     gamma = 5.0/3.0
     gamma_m = gamma - 1.0
-    c_mu = 0.20364675
-    b_t = 8.4
-    c_d = 0.35355339
-    c_c = 1.0
-    c_l = 0.28284271
-    n_y = 0.060000
-    n_e = 0.060000
-    n_k = 0.060000
-    n_l = 0.030000
-    R = 8.314
-    g = 9.8 * -1e2
-
-    n_v = 0.06
-    c_v1 = 46.67
-    c_v2 = 0.849
     
     
 def calc_gradient_face(x, U, Ux_face):
@@ -93,8 +79,7 @@ class EulerEquation(object):
         self.dx = self.x[1] - self.x[0]
         self.xc = 0.5*(self.x[0:-1] + self.x[1:])
         self.Q = np.zeros(self.n*self.nvar)
-        self.limiter = Limiters("koren")
-        self.alpha = np.ones(4)#np.array([0.9, 0.1, 0.01, 0.001])
+        self.alpha = np.ones(4)
     
     def calc_gradient_face(self):
         Ux_face = self.Ux_face.reshape([self.n+1, self.nvar])
@@ -106,9 +91,7 @@ class EulerEquation(object):
         Ux_center = self.Ux_center.reshape([self.n, self.nvar])
         U = self.U.reshape([self.n+2, self.nvar])
         Ux_center[:,:] = (U[2:,:] - U[0:-2,:])/(2.0*self.dx)
-        #Ux_center[0,:] = (U[2,:] - U[1,:])/self.dx
-        #Ux_center[-1,:] = (U[-2,:] - U[-3,:])/self.dx
-    
+
     def calc_dt(self):
         rho, u, p, Y = self.get_solution_primvars()
         a = np.sqrt(constants.gamma*p/rho)
@@ -127,7 +110,7 @@ class EulerEquation(object):
         elif type(scalar) == type(""):
             return 3 + self.scalar_map[scalar]
     
-    def calc_press(self, Q):
+    def calc_primvars(self, Q):
         output = []
         rho = Q[:, 0]
         inv_rho = 1.0/rho
@@ -161,7 +144,7 @@ class EulerEquation(object):
 
     def get_solution_primvars(self):
         Q = self.Q.reshape([self.n, self.nvar])
-        rho, u, p, Y = self.calc_press(Q)
+        rho, u, p, Y = self.calc_primvars(Q)
         return rho, u, p, Y
     
     def set_bc(self):
@@ -174,7 +157,7 @@ class EulerEquation(object):
         Y = U[:, 3:]
 
         
-        rho[1:-1], u[1:-1], p[1:-1], Y[1:-1,:] = self.calc_press(Q)
+        rho[1:-1], u[1:-1], p[1:-1], Y[1:-1,:] = self.calc_primvars(Q)
         tmpbc = False
 
         if tmpbc:
@@ -197,10 +180,6 @@ class EulerEquation(object):
             p[0] = 2.0*p[1] - p[2]
             Y[0,:] = 2.0*Y[1,:] - Y[2,:]
 
-        #Y[0,0] = -(2.0*Y[1,0] - Y[2,0])
-        #Y[0,3] = -(2.0*Y[1,3] - Y[2,3])
-
-        
         
         if tmpbc:
             if self.order == 1:
@@ -222,9 +201,7 @@ class EulerEquation(object):
             p[-1] = 2.0*p[-2] - p[-3]
             Y[-1,:] = 2.0*Y[-2,:] - Y[-3,:]
 
-        #Y[-1,0] = -(2.0*Y[-2,0] - Y[-3,0])
-        #Y[-1,3] = -(2.0*Y[-2,3] - Y[-3,3])
-
+        
         U = U.reshape((self.n+2)*self.nvar)
         self.calc_gradient_face()
         self.calc_gradient_center()
@@ -244,19 +221,10 @@ class EulerEquation(object):
             phim = vslope_limiter(rm)
             Ul[:, :] = U[0:-1,:]
             Ur[:, :] = U[1:,:]
-            #print phip.shape
-            #print Ul[1:,:].shape
-            #print phip.max(), phip.min()
-            #print phim.max(), phim.min()
+
             Ul[1:-1, :] = U[1:-2, :] + 0.5*phip[:,:] * (U[1:-2,:] - U[0:-3,:])
             Ur[0:-2, :] = U[1:-2, :] - 0.5*phim[:,:] * (U[2:-1,:] - U[1:-2,:])
-            # plt.figure()
-            # plt.ioff()
-            # plt.plot(Ul[:,0])
-            # plt.plot(Ur[:,0])
-            # plt.plot(U[0:-1,0])
-            # plt.plot(U[1:,0])
-            # plt.show()
+            
         U = U.reshape((self.n+2)*self.nvar)
         Ul = Ul.reshape((self.n+1)*self.nvar)
         Ur = Ur.reshape((self.n+1)*self.nvar)
@@ -306,8 +274,7 @@ class EulerEquation(object):
         lambda_1 =  np.abs(uavg - cavg);
         lambda_2 =  np.abs(uavg);
         lambda_3 =  np.abs(uavg + cavg);
-        #print lambda_1.min(), lambda_2.max(), lambda_3.max()
-        #print (uavg/cavg).max()
+    
         f1 = lambda_1*alpha_1 + lambda_2*alpha_2 + lambda_3*alpha_3;
         f2 = lambda_1*alpha_1*(uavg-cavg) + lambda_2*alpha_2*uavg + lambda_3*alpha_3*(uavg+cavg);
         f3 = lambda_1*alpha_1*(havg-cavg*uavg) + 0.5*lambda_2*alpha_2*uavg*uavg + lambda_3*alpha_3*(havg+cavg*uavg);
@@ -316,29 +283,16 @@ class EulerEquation(object):
         F[:,1] = 0.5*((rhol*ul*ul + pl + rhor*ur*ur + pr) - f2);
         F[:,2] = 0.5*(ul*hl*rhol + ur*hr*rhor - f3);
         
-        # uavg = 0.5*(ur+ul)
-        
-        # _Fl = rhol*ul
-        # _Fr = rhor*ur 
-        # F[:,0] = 0.5*(_Fl + _Fr) + 0.5*np.sign(uavg)*(_Fl - _Fr)
-
-        # _Fl = rhol*ul*ul
-        # _Fr = rhor*ur*ur
-        # F[:,1] = 0.5*(_Fl + _Fr) + 0.5*np.sign(uavg)*(_Fl - _Fr)
-        
-        # _Fl = rhol*ul*el/rhol
-        # _Fr = rhor*ur*er/rhor
-        # F[:,2] = 0.5*(_Fl + _Fr) + 0.5*np.sign(uavg)*(_Fl - _Fr)
-        
-
         for i in range(self.nscalar):
             F[:,self.get_scalar_index(i)] = 0.5*(rhol*ul*Yl[:,i] + rhor*ur*Yr[:,i]) + 0.5*np.sign(uavg)*(rhol*ul*Yl[:,i] - rhor*ur*Yr[:,i])
+
         F = F.reshape((self.n+1)*self.nvar)
         Ul = Ul.reshape((self.n+1)*self.nvar)
         Ur = Ur.reshape((self.n+1)*self.nvar)
         assert(same_address(Ul, self.Ul))
         assert(same_address(Ur, self.Ur))
         assert(same_address(F, self.F))
+
     def calc_flux_hllc(self):
         F = self.F.reshape([self.n+1, self.nvar])
 
@@ -387,11 +341,6 @@ class EulerEquation(object):
             U_star_1 = Ss * fac
             U_star_2 = e/rho + (Ss-u)*(Ss + p/(rho*(S-u)))
             U_star_2 = U_star_2 * fac
-            #print fac.shape
-            #print self.nscalar
-            #fac = fac
-            #fac = np.tile(fac, (self.nscalar,1)).T
-            #print fac.shape, Y.shape
             U_star_3 = Y * fac[:,np.newaxis]
             return U_star_0, U_star_1, U_star_2, U_star_3
 
@@ -459,6 +408,7 @@ class EulerEquation(object):
     def calc_source(self):
         S = self.S.reshape([self.n, self.nvar])
         S[:,:] = 0.0
+
     def temporal_hook(self):
         pass
     
@@ -470,11 +420,6 @@ class EulerEquation(object):
             self.calc_flux_roe()
         elif self.flux == "hllc":
             self.calc_flux_hllc()
-        elif self.flux == "hllcf":
-            F = self.F.reshape([self.n+1, self.nvar])
-            Ul = self.Ul.reshape([self.n+1, self.nvar])
-            Ur = self.Ur.reshape([self.n+1, self.nvar])
-            F[:,:] = f.calc_flux_hllc(Ul, Ur)
         elif self.flux == "none":
             F = self.F.reshape([self.n+1, self.nvar])
             F[:,:] = 0.0
@@ -490,10 +435,6 @@ class EulerEquation(object):
         R[:,:] = - (F[1:,:] - F[0:-1,:])/self.dx
         R[:,:] = R[:,:] + (Fv[1:,:] - Fv[0:-1,:])/self.dx
         R[:,:] = R[:,:] + S[:,:]
-        #diff = - (F[1:,1] - F[0:-1,1])/self.dx + S[:,1]
-        #for i in range(self.n):
-        #idx = diff.argmax()
-        #print diff.max(), self.xc[idx]
         F = F.reshape((self.n+1)*self.nvar)
         R = R.reshape(self.n*self.nvar)
         assert(same_address(F, self.F))
@@ -907,11 +848,8 @@ if __name__ == "__main__":
         plt.plot(eqn.xc, rhoY, 'c--', lw=1, label="Y")
 
         
-    # #plt.plot(eqn.xc, rhou, 'x-', lw=1)
-    # #plt.plot(eqn.xc, rhoE, 'x-', lw=1)
-
     positions, regions, values = sod.solve(left_state=(1, 1, 0), right_state=(0.1, 0.125, 0.),
-                                           geometry=(-0.5, 0.5, 0.0), t=tf, gamma=constants.gamma, npts=101)
+                                        geometry=(-0.5, 0.5, 0.0), t=tf, gamma=constants.gamma, npts=101)
 
     plt.plot(values['x'], values['rho'], 'r-', lw=2, label="Density")
     plt.plot(values['x'], values['u'], 'g-', lw=2, label="Velocity")

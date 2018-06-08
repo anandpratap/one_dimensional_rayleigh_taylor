@@ -1,6 +1,25 @@
-from main import constants, EulerEquation, same_address, calc_gradient_face, calc_gradient_center, safe_divide, vsafe_divide
+from main import EulerEquation, same_address, calc_gradient_face, calc_gradient_center, safe_divide, vsafe_divide
 import numpy as np
 import matplotlib.pyplot as plt
+
+class constants(object):
+    gamma = 5.0/3.0
+    gamma_m = gamma - 1.0
+    c_mu = 0.20364675
+    b_t = 8.4
+    c_d = 0.35355339
+    c_c = 1.0
+    c_l = 0.28284271
+    n_y = 0.060000
+    n_e = 0.060000
+    n_k = 0.060000
+    n_l = 0.030000
+    R = 8.314
+    g = 9.8 * -1e2
+    n_v = 0.06
+    c_v1 = 46.67
+    c_v2 = 0.849
+
 
 def calc_partial_volume(Yh, Yl, rho, At):
     rhoh, rhol = calc_partial_rho(At)
@@ -25,11 +44,18 @@ def smooth(x, left, right):
 
 
 class RT(EulerEquation):
-    def initialize(self, qleft=None, qright=None):
+    def initialize(self):
+        self.At = 0.05
+        L_init = 4e-8
+        k_init = 1.6e-15
+        T_ref = 293.0
+        P_ref = 101325.0
+
+
         self.scalar_map = {"k":0, "L": 1, "Y_h": 2, "V_h": 3}
         Q = self.Q.reshape([self.n, self.nvar])
 
-        self.At = 0.05
+        
         rho_h, rho_l = calc_partial_rho(self.At)
         
         
@@ -41,26 +67,15 @@ class RT(EulerEquation):
         L = np.zeros(self.n)
 
         first_half = self.xc <= 0.0
-        #slice(None, self.n/2)
         second_half = self.xc > 0.0
-        #slice(self.n/2, None)
 
         
-
         Yh[first_half] = 0.0
         Yh[second_half] = 1.0
-        #for i in range(5):
-        #    Yh[1:-1] = 0.5*(Yh[2:] + Yh[:-2])
-        #Yh = smooth(self.xc, 0.0, 1.0)
         Yl = 1.0 - Yh
                
         rho = rho_l * Yl + rho_h * Yh
-        #rho[first_half] = rho_l
-        #rho[second_half] = rho_h
-        L_init = 4e-8
-        k_init = 1.6e-15
-        T_ref = 293.0
-        P_ref = 101325.0
+
         R = constants.R
 
         get_mw = lambda rhoi: rhoi*R*T_ref/P_ref
@@ -73,8 +88,7 @@ class RT(EulerEquation):
 
         T_l =  get_T(mw_l)
         T_h =  get_T(mw_h)
-        #print T_l
-        #print T_h
+
         cv_l = get_cv(mw_l)
         cv_h = get_cv(mw_h)
 
@@ -100,7 +114,6 @@ class RT(EulerEquation):
         Q[:, idx] = 0.0
         
         Q = Q.reshape(self.n*self.nvar)
-        # check if any copy happened
         assert(same_address(Q, self.Q))
 
     def calc_E(self, rho, u, p):
@@ -124,7 +137,6 @@ class RT(EulerEquation):
         u = U[:, 1]
         p = U[:, 2]
         
-        #print p
         Y = U[:, 3:]
         idx = self.get_scalar_index("k")
         k = U[:,idx]
@@ -145,7 +157,7 @@ class RT(EulerEquation):
         self.rhotaux = (self.rhotau[2:] - self.rhotau[0:-2])/self.dx/2.0
 
         
-    def calc_press(self, Q):
+    def calc_primvars(self, Q):
         output = []
         rho = Q[:, 0]
         u = Q[:, 1]/Q[:, 0]
@@ -169,16 +181,15 @@ class RT(EulerEquation):
         
 
         output = [rho, u, p]
-        #u = np.clip(u, -1e10, 0.0)
-        
+                
         Y = Q[:, 3:]/np.tile(Q[:, 0], (self.nscalar,1)).T
+
+        #clip k to be positive
         idx = self.get_scalar_index("k")
-        # clip k to possitive value
-        #Y[:,idx-3] = 1e-4 #*(1 - (self.xc/0.05)**2)
         Y[:,idx-3] = np.clip(Y[:,idx-3], 0.0, 1e10)
-        #print 'calc press ', Y[:,idx-3]
+
+        # clip L to be positive
         idx = self.get_scalar_index("L")
-        #Y[:,idx-3] = 1e-6 #*(1 - (self.xc/0.05)**2)
         Y[:,idx-3] = np.clip(Y[:,idx-3], 0.0, 1e10)
         
         
@@ -253,16 +264,13 @@ class RT(EulerEquation):
 
         
         rhotau_face = self.interpolate_on_face(self.rhotau)
-        #Fv[:,1] = mut_face*Ux_face[:,1]
         Fv[:,2] = self.ex*mut_face/constants.n_e
         
         
     def calc_dt(self):
         rho, u, p, Y = self.get_solution_primvars()
-        #print p
         a = np.sqrt(constants.gamma*p/rho)
         lambda_max = np.max(a + np.abs(u))
-        #print lambda_max
         dt_inv = self.dx/lambda_max
         try:
             mut = self.mut
@@ -297,9 +305,8 @@ class RT(EulerEquation):
         Y = U[:, 3:]
 
         
-        rho[1:-1], u[1:-1], p[1:-1], Y[1:-1,:] = self.calc_press(Q)
-        #self.calc_press(Q)
-        #print p
+        rho[1:-1], u[1:-1], p[1:-1], Y[1:-1,:] = self.calc_primvars(Q)
+        
         if self.order == 2 or self.order == 1:
             interpolate_bc = lambda q: 2.0*q[1] - q[2]
         elif self.order == 1:
@@ -336,7 +343,7 @@ if __name__ == "__main__":
     eqn.solve(tf=1.6, cfl = 0.5, animation=True, print_step=10000, integrator="rk2", flux="hllc", order=1, file_io=True, maxstep=1000000000000, jacobian_mode=None)
     rho, rhou, rhoE, rhoY = eqn.get_solution()
     rho, u, p, Y = eqn.get_solution_primvars()
-    #np.savez("data_5.npz", rho=rho, u=u, p=p, Y=Y, x=eqn.xc)
+    
     plt.figure()
     plt.plot(eqn.xc, rho/np.abs(rho).max(), 'r-', lw=1, label="Density")
     plt.plot(eqn.xc, u/np.abs(u).max(), 'gx-', lw=1, label="Velocity")

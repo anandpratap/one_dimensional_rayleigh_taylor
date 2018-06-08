@@ -1,0 +1,11 @@
+- To run the RT model `python rt.py`.
+- There are no special dependencies, the code should work if you have numpy, matplotlib, scipy.
+- All the RT related stuff are in rt.py. 
+- The function names should be self explanatory.
+- Critical functions are:
+    - `initialize
+    - `calc_viscous_flux
+    - `calc_source`
+    - `set_bc
+    - `calc_primvars
+- You can use `python plot.py` to plot the solution as soon as one data file is written (After 10000 iterations, which can be set on line 343 of rt.py).
