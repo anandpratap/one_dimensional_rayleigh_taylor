@@ -1,7 +1,7 @@
 import glob 
 from pylab import *
 import numpy as np
-from rt import constants
+from rt_brandon import constants
 from analytic import analytic_solution
 def get_width(x, y):
     ymin = y[0]
@@ -33,7 +33,7 @@ def integrate(x, y):
     return iy
 
 directory = ""
-file_list = glob.glob("%sdata_0*"%(directory))
+file_list = glob.glob("%sdata_0*[0-9].npz"%(directory))
 file_list = sorted(file_list, key=lambda name: int(name[5:-4]))
 
 At = 0.05

@@ -1,21 +1,25 @@
 import logging
-logging.basicConfig(level=logging.DEBUG)
+from sklearn import neural_network
+from sklearn.externals import joblib
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 try:
     import adolc as ad
     adolc_found = True
 except:
     adolc_found = False
-    logger.warning("ADOLC not found. It is required for adjoint calculations.")
+    #logger.warning("ADOLC not found. It is required for adjoint calculations.")
     
 import numpy as np
 import numpy.linalg as la
 import matplotlib.pyplot as plt
-import scipy.sparse as sp
-import scipy.sparse.linalg as spla
-import sod
+#import scipy.sparse as sp
+#import scipy.sparse.linalg as spla
+#import sod
 import os
 import tempfile
+import pickle
+import time
 
 def safe_divide(x, y, mode=0):
     if mode == 0:
@@ -62,16 +66,86 @@ def calc_gradient_center(x, U, Ux_center):
     Ux_center = Ux_center.reshape([n, nvar])
     U = U.reshape([n+2, nvar])
     Ux_center[:,:] = (U[2:,:] - U[0:-2,:])/(2.0*dx)
+
+class CSRMatrixBuffer(object):
+    def __init__(self, n):
+        self.nnz = int(n*n*0.01)
+        self.n = np.zeros(3, dtype=np.int32)
+        self.indices = np.zeros(self.nnz, dtype=np.int32)
+        self.indptr = np.zeros(self.nnz, dtype=np.int32)
+        self.data = np.zeros(self.nnz)
+
+def csr_matrix_to_buffer(csrbuffer, csr):
+    #print csrbuffer.nnz, csr.nnz
+    #assert csrbuffer.nnz > csr.nnz
+    csrbuffer.nnz = csr.nnz
+    csrbuffer.indices[:csr.indices.size] = csr.indices[:]
+    csrbuffer.indptr[:csr.indptr.size] = csr.indptr[:]
+    csrbuffer.data[:csr.nnz] = csr.data[:]
+    csrbuffer.n[0] = csr.indices.size
+    csrbuffer.n[1] = csr.indptr.size
+    
+vCSRMatrixBuffer = np.vectorize(CSRMatrixBuffer)
+
+class Buffer(object):
+    def __init__(self, n, nvar):
+        self.NLIMIT = 60020
+        self.n = n
+        self.nvar = nvar
+        self.counter = 0
+        self.buffer_no = 0
+                    #             np.savez("data_%s.npz"%name, rho=rho, u=u, p=p, Y=Y, x=self.xc, t=t, Q=self.Q)
+                    # else:
+                    #     np.savez("data_%s.npz"%name, rho=rho, u=u, p=p, Y=Y, x=self.xc, t=t, Q=self.Q)
+                    #     import scipy.io as io
+                    #     #print self.dRdQ_nm
+                    #     sp.save_npz("data_%s_1.mat"%name, self.dRdQ_nm)
+                    #     sp.save_npz("data_%s_2.mat"%name, self.dRdalpha_n)
+        #self.rho_buffer = np.zeros([self.NLIMIT, n])
+        #self.u_buffer = np.zeros([self.NLIMIT, n])
+        #self.p_buffer = np.zeros([self.NLIMIT, n])
+        #self.Y_buffer = np.zeros([self.NLIMIT, n, nvar-3])
+        #self.xc_buffer = np.zeros([self.NLIMIT, n])
+        self.Q_buffer = np.zeros([self.NLIMIT, n*nvar])
+        self.t_buffer = np.zeros(self.NLIMIT)
+        #self.dRdQ_nm = np.empty([self.NLIMIT], dtype=object)
+
+        #tmp = np.ones(self.NLIMIT, dtype=np.int32)*n*nvar
+        #self.dRdQ_nm[:] = vCSRMatrixBuffer(tmp)
+
+        #self.dRdalpha_n = np.empty([self.NLIMIT], dtype=object)
+        #self.dRdalpha_n[:] = vCSRMatrixBuffer(tmp)
+        self.iteration = np.zeros([self.NLIMIT], dtype=np.int32)
+
+    def save_to_file(self, filename):
+        f = open(filename, 'wb')
+        pickle.dump(self.counter, f, pickle.HIGHEST_PROTOCOL)
+        for v in [self.t_buffer, self.Q_buffer, self.iteration]:
+            pickle.dump(v, f, pickle.HIGHEST_PROTOCOL)
+        f.close()
+        
+    def save_to_buffer(self, step, t, Q):
+        self.Q_buffer[self.counter,:] = Q[:]
+        self.t_buffer[self.counter] = t
+        self.iteration[self.counter] = step
+        self.counter += 1
+        if self.counter == self.NLIMIT:
+            self.save_to_file("tmp_"+str(self.buffer_no))
+            self.buffer_no += 1
+            self.counter = 0
+        else:
+            pass
     
 class EulerEquation(object):
     """Base class to solve the one dimensional Euler Equation.
 
     """
-    def __init__(self, n=11, nscalar=0):
+    def __init__(self, n=11, nscalar=0, ml=False):
         self.logger = logging.getLogger(__name__)
         self.n = n - 1
         self.nscalar = nscalar
         self.nvar = 3 + self.nscalar
+        self.buffer = Buffer(self.n, self.nvar)
         self.scalar_map = {}
         for i in range(self.nscalar):
             self.scalar_map["Y_%i"%i] = i
@@ -79,8 +153,14 @@ class EulerEquation(object):
         self.dx = self.x[1] - self.x[0]
         self.xc = 0.5*(self.x[0:-1] + self.x[1:])
         self.Q = np.zeros(self.n*self.nvar)
-        self.alpha = np.ones(4)
-    
+        self.alpha = np.ones(79)
+        
+        self.ml = ml
+        if self.ml:
+            self.nn = joblib.load("model.net")
+            self.xmean = np.loadtxt("xmean")
+            self.xstd = np.loadtxt("xstd")
+
     def calc_gradient_face(self):
         Ux_face = self.Ux_face.reshape([self.n+1, self.nvar])
         U = self.U.reshape([self.n+2, self.nvar])
@@ -605,22 +685,44 @@ class EulerEquation(object):
         return dR
 
 
-    def calc_jacobian_ad(self, tag):
+    def calc_jacobian_ad(self, tag, step=0, record_tape=True, psi=None):
         options = np.array([0,0,0,0],dtype=int)
-        self.record_tape(tag=tag)
+        #if step < 10:
+        if record_tape:
+            self.record_tape(tag=tag)
         if tag == 0:
-            result = ad.colpack.sparse_jac_no_repeat(tag, self.Q, options)
+            if record_tape:
+                if psi is None:
+                    result = ad.colpack.sparse_jac_no_repeat(tag, self.Q, options)
+                    self.result_tag_0 = list(result)
+                else:
+                    result = ad.vec_jac(tag, self.Q, psi)
+                    return result
+                
+            else:
+                if psi == None:
+                    result = ad.colpack.sparse_jac_repeat(tag, self.Q, self.result_tag_0[0], self.result_tag_0[1], self.result_tag_0[2], self.result_tag_0[3])
+                else:
+                    result = ad.vec_jac(tag, self.Q, psi)
+                    print "result", result.shape
+                    return result
+                #result = ad.colpack.sparse_jac_repeat(tag, self.Q, options)        
         else:
-            result = ad.colpack.sparse_jac_no_repeat(tag, self.alpha, options)
+            if record_tape:
+                result = ad.colpack.sparse_jac_no_repeat(tag, self.alpha, options)
+                self.result_tag_1 = list(result)
+            else:
+                result = ad.colpack.sparse_jac_repeat(tag, self.alpha, self.result_tag_1[0], self.result_tag_1[1], self.result_tag_1[2], self.result_tag_1[3])
+                #result = ad.colpack.sparse_jac_repeat(tag, self.alpha, options)
         nnz = result[0]
         ridx = result[1]
         cidx = result[2]
         values = result[3]
         N = self.n*self.nvar
         if tag == 0:
-            return sp.csr_matrix((values, (ridx, cidx)), shape=(N, N)).toarray()
+            return sp.csr_matrix((values, (ridx, cidx)), shape=(N, N))
         elif tag == 1:
-            return sp.csr_matrix((values, (ridx, cidx)), shape=(N, self.alpha.size)).toarray()
+            return sp.csr_matrix((values, (ridx, cidx)), shape=(N, self.alpha.size))
 
     
     def calc_step(self):
@@ -629,7 +731,8 @@ class EulerEquation(object):
     def temporal_hook_post(self):
         pass
         
-    def solve(self, tf = 0.1, dt = 1e-4, animation = False, cfl=1.0, print_step=100, integrator="fe", flux="hllc", order=1, file_io=False, maxstep=1e10, jacobian_mode=None, tmp_dir=False):
+    def solve(self, tf = 0.1, dt = 1e-4, animation = False, cfl=1.0, print_step=100, integrator="fe", flux="hllc", order=1, file_io=False, maxstep=1e10, jacobian_mode=None, tmp_dir=False, do_not_update=False, record_tape=True, allocate_vars=True, psi=None, main_run=True):
+        self.maxstep = maxstep
         if tmp_dir:
             cwd = os.getcwd()
             run_dir = tempfile.mkdtemp(prefix="solver_")
@@ -642,23 +745,24 @@ class EulerEquation(object):
         if animation:
             plt.ion()
             plt.figure(figsize=(10,10))
-        self.R = np.zeros(self.n*self.nvar)
-        self.S = np.zeros(self.n*self.nvar)
-        self.U = np.zeros((self.n + 2)*self.nvar)
-
-        self.mut = np.zeros((self.n + 2))
-        self.rhotau = np.zeros((self.n + 2))
-        self.b = np.zeros((self.n + 2))
-        self.ex = np.zeros((self.n + 1))
-        
-        self.Ux_face = np.zeros((self.n + 1)*self.nvar)
-        self.Ux_center = np.zeros(self.n*self.nvar)
-        self.F = np.zeros((self.n + 1)*self.nvar)
-        self.Fv = np.zeros((self.n + 1)*self.nvar)
-        self.Ul = np.zeros((self.n+1)*self.nvar)
-        self.Ur = np.zeros((self.n+1)*self.nvar)
-        self.flux = flux
-        self.order = order
+        if allocate_vars:
+            self.R = np.zeros(self.n*self.nvar)
+            self.S = np.zeros(self.n*self.nvar)
+            self.U = np.zeros((self.n + 2)*self.nvar)
+            
+            self.mut = np.zeros((self.n + 2))
+            self.rhotau = np.zeros((self.n + 2))
+            self.b = np.zeros((self.n + 2))
+            self.ex = np.zeros((self.n + 1))
+            
+            self.Ux_face = np.zeros((self.n + 1)*self.nvar)
+            self.Ux_center = np.zeros(self.n*self.nvar)
+            self.F = np.zeros((self.n + 1)*self.nvar)
+            self.Fv = np.zeros((self.n + 1)*self.nvar)
+            self.Ul = np.zeros((self.n+1)*self.nvar)
+            self.Ur = np.zeros((self.n+1)*self.nvar)
+            self.flux = flux
+            self.order = order
         #self.record_tape(/)
         t = 0.0
         step = 0
@@ -675,59 +779,53 @@ class EulerEquation(object):
             k4 = np.zeros_like(self.R)
             
         while 1:
-            
+            start = time.time()
             if integrator == "be":
-                tag = 0
-                options = np.array([0,0,0,0],dtype=int)
-                self.record_tape(tag=tag)
-                result = ad.colpack.sparse_jac_no_repeat(tag, self.Q, options)
-                
-                nnz = result[0]
-                ridx = result[1]
-                cidx = result[2]
-                values = result[3]
-                N = self.n*self.nvar
-                self.calc_residual()
+                self.calc_step()
                 R = self.R.copy()
-                #print dt
-                #print values
-                drdu = -sp.csr_matrix((values, (ridx, cidx)), shape=(N, N)) + sp.eye(N)/dt
-                #print drdu
+                dt = 1e-7
+                tag = 0
+                drdu = self.calc_jacobian_ad(tag=tag, step=step, record_tape=True)
+                drdu.data = np.nan_to_num(drdu.data)
+                drdu = -drdu + sp.eye(drdu.shape[0])/dt
                 dQ = spla.spsolve(drdu, R)
-                #print np.linalg.norm(R - self.R)
                 self.Q  = self.Q + dQ
                 
             elif integrator == "fe":
-                
+                self.time_step = step
                 self.calc_step()
                 R = self.R.copy()
-                dt = 1e-5 #self.calc_dt()*cfl
+                #print self.calc_dt()
+                dt = 1e-8 #self.calc_dt()*cfl
                 dQ = R*dt
                 tag = 0
                 if jacobian_mode == "adolc":
-                    self.dRdQ_nm = self.calc_jacobian_ad(tag=tag)
+                    self.dRdQ_nm = self.calc_jacobian_ad(tag=tag, step=step, record_tape=record_tape, psi=psi)
                 elif jacobian_mode == "complex":
                     self.dRdQ_nm = self.calc_jacobian_complex(tag=tag)
                     
                 tag = 1
-                if jacobian_mode == "adolc":
-                    self.dRdalpha_nm = self.calc_jacobian_ad(tag=tag)
-                elif jacobian_mode == "complex":
-                    self.dRdalpha_nm = self.calc_jacobian_complex(tag=tag)
+                # if jacobian_mode == "adolc":
+                #     self.dRdalpha_nm = self.calc_jacobian_ad(tag=tag)
+                # elif jacobian_mode == "complex":
+                #     self.dRdalpha_nm = self.calc_jacobian_complex(tag=tag)
 
                 self.Q  = self.Q + dQ
-
-                if jacobian_mode == "adolc":
-                    self.dRdQ_n = self.calc_jacobian_ad(tag=tag)
-                elif jacobian_mode == "complex":
-                    self.dRdQ_n = self.calc_jacobian_complex(tag=tag)
+                
+                # if jacobian_mode == "adolc":
+                #     self.dRdQ_n = self.calc_jacobian_ad(tag=tag)
+                # elif jacobian_mode == "complex":
+                #     self.dRdQ_n = self.calc_jacobian_complex(tag=tag)
                     
                 tag = 1
                 if jacobian_mode == "adolc":
-                    self.dRdalpha_n = self.calc_jacobian_ad(tag=tag)
+                    self.dRdalpha_n = self.calc_jacobian_ad(tag=tag, step=step, record_tape=record_tape)
                 elif jacobian_mode == "complex":
                     self.dRdalpha_n = self.calc_jacobian_complex(tag=tag)
+                if do_not_update:
+                    return self.dRdQ_nm, self. dRdalpha_n
 
+                    
             elif integrator == "rk2":
                 dt = self.calc_dt()*cfl
                 self.calc_step()
@@ -767,7 +865,7 @@ class EulerEquation(object):
             t += dt
             step += 1
             if step%print_step == 0 or jacobian_mode is not None: 
-                self.logger.info("Time = %.2e/%.2e (%.01f%% complete)"%(t, tf, t/tf*100))
+                #self.logger.info("Time = %.2e/%.2e (%.01f%% complete)"%(t, tf, t/tf*100))
                 #self.logger.info("Time = %.2e"%(np.linalg.norm(dQ)))
                 if animation or file_io:
                     rho, u, p, Y = self.get_solution_primvars()
@@ -805,13 +903,24 @@ class EulerEquation(object):
                     name = str(step)
                     name = name.zfill(10)
                     if jacobian_mode == None:
-                        np.savez("data_%s.npz"%name, rho=rho, u=u, p=p, Y=Y, x=self.xc, t=t, Q=self.Q)
+                        #np.savez("data_%s.npz"%name, rho=rho, u=u, p=p, Y=Y, x=self.xc, t=t, Q=self.Q)
+                        self.buffer.save_to_buffer(step, t, self.Q)
                     else:
-                        np.savez("data_%s.npz"%name, rho=rho, u=u, p=p, Y=Y, x=self.xc, t=t, Q=self.Q, dRdQ_nm=self.dRdQ_nm, dRdalpha_nm=self.dRdalpha_nm, dRdQ_n=self.dRdQ_n, dRdalpha_n=self.dRdalpha_n)
+                        pass
+                        #np.savez("/home/anandps/mnt/ramdisk/data_%s"%name, rho=rho, u=u, p=p, Y=Y, x=self.xc, t=t, Q=self.Q)
+                        #self.buffer.save_to_buffer(step, rho, u, p, Y, self.xc, t, self.Q, self.dRdQ_nm, self.dRdalpha_n)
+                        #import scipy.io as io
+                        #print self.dRdQ_nm
+                        #sp.save_npz("/home/anandps/mnt/ramdisk/data_%s_1"%name, self.dRdQ_nm)
+                        #sp.save_npz("/home/anandps/mnt/ramdisk/data_%s_2"%name, self.dRdalpha_n)
+                        #np.savez("data_%s.npz"%name, rho=rho, u=u, p=p, Y=Y, x=self.xc, t=t, Q=self.Q, dRdQ_nm=self.dRdQ_nm, dRdalpha_nm=self.dRdalpha_nm, dRdQ_n=self.dRdQ_n, dRdalpha_n=self.dRdalpha_n)
 
-            
+            step_time = time.time() - start
+            #print "Time: ", step_time
             if t > tf or step > maxstep:
-                self.logger.info("Time = %.2e/%.2e (%.01f%% complete)"%(t, tf, t/tf*100))
+                #self.logger.info("Time = %.2e/%.2e (%.01f%% complete)"%(t, tf, t/tf*100))
+                if main_run:
+                    self.buffer.save_to_file("final_6")
                 if animation:
                     plt.ioff()
                 break
